@@ -15,7 +15,7 @@ use constant SUNOS => $^O eq 'solaris';
 our $VERSION = "1.0004";
 $VERSION = eval $VERSION;
 
-my $quote = WIN32 ? q/"/ : q/'/;
+my $quote = WIN32 ? q/"/ : q/'/; # " make emacs happy
 
 sub new {
     my $class = shift;
@@ -43,6 +43,9 @@ sub new {
         configure_timeout => 60,
         try_lwp => 1,
         uninstall_shadows => 1,
+        local_metadb => ($ENV{CPANM_LOCAL_METADB} || ''),
+        local_auth_user => '',
+        local_auth_pass => '',
         @_,
     }, $class;
 }
@@ -86,6 +89,9 @@ sub parse_options {
         'self-upgrade' => sub { $self->{cmd} = 'install'; $self->{skip_installed} = 1; push @ARGV, 'App::cpanminus' },
         'uninst-shadows!'  => \$self->{uninstall_shadows},
         'lwp!'    => \$self->{try_lwp},
+        'local-metadb=s' => \$self->{local_metadb},
+        'u|user=s'       =>  \$self->{local_auth_user},
+        'p|pass=s'       => \$self->{local_auth_pass},
     );
 
     $self->{argv} = \@ARGV;
@@ -165,6 +171,24 @@ sub fetch_meta {
 sub search_module {
     my($self, $module) = @_;
 
+    if ($self->{local_metadb}) {
+        $self->chat("Searching $module on local metadb ...\n");
+        my $uri  = join('/', $self->{local_metadb}, $module);
+        my $yaml = $self->get($uri);
+        my $meta = $self->parse_meta_string($yaml);
+        if ($meta->{url}) {
+            my $url = $meta->{url};
+            if ($self->{local_auth_user}) {
+               my $secret = join(':',
+                                 $self->{local_auth_user},
+                                 $self->{local_auth_pass});
+               $url =~ s,^http://,http://$secret@,;
+            }
+            $self->chat("$module found on localmetadb ($url)\n");
+            return { uris => [ $url ], version => $meta->{version} };
+        }
+   }
+
     $self->chat("Searching $module on cpanmetadb ...\n");
     my $uri  = "http://cpanmetadb.appspot.com/v1.0/package/$module";
     my $yaml = $self->get($uri);
@@ -173,7 +197,13 @@ sub search_module {
         return $self->cpan_module($module, $meta->{distfile}, $meta->{version});
     }
 
-    $self->diag_fail("Finding $module on cpanmetadb failed.");
+    $self->diag_fail(join(' ',
+                          "Finding $module on",
+                          ($self->{local_metadb}
+                           ? "local metadb($self->{local_metadb}) and"
+                           : ()
+                          ),
+                          "cpanmetadb failed."));
 
     $self->chat("Searching $module on search.cpan.org ...\n");
     my $uri  = "http://search.cpan.org/perldoc?$module";
@@ -233,6 +263,9 @@ Options:
   --prompt                  Prompt when configure/build/test fails
   -l,--local-lib            Specify the install base to install modules
   -L,--local-lib-contained  Specify the install base to install all non-core modules
+  --local-metadb            Specify the your local CPAN metadb
+  -u,--user                 Specify username if your local repository needs authentification.
+  -p,--pass                 Specify password if your local repository needs authentification.
 
 Commands:
   --self-upgrade            upgrades itself
