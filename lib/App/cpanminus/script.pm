@@ -12,7 +12,7 @@ use Parse::CPAN::Meta;
 use constant WIN32 => $^O eq 'MSWin32';
 use constant SUNOS => $^O eq 'solaris';
 
-our $VERSION = "1.0004";
+our $VERSION = "1.0006";
 $VERSION = eval $VERSION;
 
 my $quote = WIN32 ? q/"/ : q/'/; # " make emacs happy
@@ -252,7 +252,7 @@ Usage: cpanm [options] Module [...]
 
 Options:
   -v,--verbose              Turns on chatty output
-  -q,--quiet                Turns off all outpu
+  -q,--quiet                Turns off all output
   --interactive             Turns on interactive configure (required for Task:: modules)
   -f,--force                force install
   -n,--notest               Do not run unit tests
@@ -618,7 +618,7 @@ sub install {
         unshift @$cmd, "sudo";
     }
 
-    if ($self->{uninstall_shadows}) {
+    if ($self->{uninstall_shadows} && !$ENV{PERL_MM_OPT}) {
         push @$cmd, @$uninst_opts;
     }
 
@@ -1017,7 +1017,7 @@ sub build_stuff {
 
     if ($installed) {
         my $local   = $self->{local_versions}{$dist->{module} || ''};
-        my $version = $dist->{meta}{version} || $dist->{version};
+        my $version = $dist->{module_version} || $dist->{meta}{version} || $dist->{version};
         my $reinstall = $local && ($local eq $version);
 
         my $how = $reinstall ? "reinstalled $distname"
