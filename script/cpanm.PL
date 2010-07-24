@@ -1,4 +1,15 @@
 #!/usr/bin/env perl
+#
+# You want to install cpanminus? Run the following command and it will
+# install itself for you. You might want to run it as a root with sudo
+# if you want to install to places like /usr/local/bin.
+#
+#   % curl -L http://cpanmin.us | perl - --self-upgrade
+#
+# If you don't have curl but wget, replace `curl -L` with `wget -O -`.
+#
+# For more details about this program, visit http://search.cpan.org/dist/App-cpanminus
+#
 # DEVELOPERS: Read script/build.PL in the repo how to update this
 # __FATPACK__
 use strict;
@@ -43,7 +54,7 @@ compatibility option to make it work like L<cpan> or L<cpanp>.
 
 Upgrades itself. It's just an alias for:
 
-  cpanm --skip-installed App::cpanminus
+  cpanm App::cpanminus
 
 =item --info
 
@@ -155,14 +166,19 @@ one of the dependency failed if you want to proceed the installation.
 Defaults to false, and you can say C<--no-prompt> to override if it's
 set in the default options in C<PERL_CPANM_OPT>.
 
-=item --skip-installed
+=item --reinstall
 
-cpanm by default reinstalls the given module even if the latest
-version is already installed. This option makes it check the installed
-version first and skips if it's already the latest.
+cpanm, when given a module name in the command line (i.e. C<cpanm
+Plack>), checks the locally installed version first and skips if it is
+already installed. This option makes it skip the check, so:
 
-Defaults to false, and you can say C<--no-skip-installed> to override
-when it's set in the default options in C<PERL_CPANM_OPT>.
+  cpanm --reinstall Plack
+
+would reinstall L<Plack> even if your locally installed version is
+latest, or even newer (which would happen if you install a developer
+release from version control repositories).
+
+Defaults to false.
 
 =item --interactive
 
