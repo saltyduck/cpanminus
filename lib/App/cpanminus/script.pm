@@ -12,7 +12,7 @@ use Parse::CPAN::Meta;
 use constant WIN32 => $^O eq 'MSWin32';
 use constant SUNOS => $^O eq 'solaris';
 
-our $VERSION = "1.0010";
+our $VERSION = "1.0012";
 $VERSION = eval $VERSION;
 
 my $quote = WIN32 ? q/"/ : q/'/; # " make emacs happy
@@ -69,7 +69,7 @@ sub parse_options {
 
     Getopt::Long::Configure("bundling");
     Getopt::Long::GetOptions(
-        'f|force!'  => \$self->{force},
+        'f|force'   => sub { $self->{skip_installed} = 0; $self->{force} = 1 },
         'n|notest!' => \$self->{notest},
         'S|sudo!'   => \$self->{sudo},
         'v|verbose' => sub { $self->{verbose} = $self->{interactive} = 1 },
@@ -690,6 +690,8 @@ sub install_module {
         return 1;
     }
 
+    $self->check_libs;
+
     if ($dist->{module}) {
         my($ok, $local) = $self->check_module($dist->{module}, $dist->{module_version} || 0);
         if ($self->{skip_installed} && $ok) {
@@ -719,7 +721,6 @@ sub install_module {
         return 1;
     }
 
-    $self->check_libs;
     return $self->build_stuff($module, $dist, $depth);
 }
 
@@ -1366,7 +1367,7 @@ sub init_tools {
                 or return undef;
 
             chomp $root;
-            $root =~ s{^(.+)/[^/]*$}{$1};
+            $root =~ s{^(.+?)/.*$}{$1};
 
             system "$tar $xf$ar $tarfile";
             return $root if -d $root;
@@ -1388,7 +1389,7 @@ sub init_tools {
                 or return undef;
 
             chomp $root;
-            $root =~ s{^(.+)/[^/]*$}{$1};
+            $root =~ s{^(.+?)/.*$}{$1};
 
             system "$ar -dc $tarfile | $tar $x";
             return $root if -d $root;
@@ -1402,6 +1403,7 @@ sub init_tools {
             my $self = shift;
             my $t = Archive::Tar->new($_[0]);
             my $root = ($t->list_files)[0];
+            $root =~ s{^(.+?)/.*$}{$1};
             $t->extract;
             return -d $root ? $root : undef;
         };
