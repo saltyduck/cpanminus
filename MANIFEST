@@ -62,6 +62,7 @@ xt/enhancement/make_uninst.t
 xt/enhancement/mb_eumm.t
 xt/README
 xt/regression/dupe.t
+xt/regression/local_lib_skip.t
 xt/regression/module_build_dists.t
 xt/regression/mymeta.t
 xt/regression/mymeta_sig.t
