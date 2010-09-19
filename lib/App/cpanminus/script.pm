@@ -47,6 +47,7 @@ sub new {
         local_metadb => ($ENV{CPANM_LOCAL_METADB} || ''),
         local_auth_user => '',
         local_auth_pass => '',
+        no_cpan => 0,
         @_,
     }, $class;
 }
@@ -94,6 +95,7 @@ sub parse_options {
         'local-metadb=s' => \$self->{local_metadb},
         'u|user=s'       =>  \$self->{local_auth_user},
         'p|pass=s'       => \$self->{local_auth_pass},
+        'nocpan'       => \sub { $self->{no_cpan} = 1; },
     );
 
     $self->{argv} = \@ARGV;
@@ -170,26 +172,41 @@ sub fetch_meta {
     return $self->parse_meta_string($meta_yml);
 }
 
+my $filelocalmetadb;
+
 sub search_module {
     my($self, $module) = @_;
 
     if ($self->{local_metadb}) {
+        my $localmetadb = $self->{local_metadb};
         $self->chat("Searching $module on local metadb ...\n");
-        my $uri  = join('/', $self->{local_metadb}, $module);
-        my $yaml = $self->get($uri);
-        my $meta = $self->parse_meta_string($yaml);
+        my $meta;
+        if ($localmetadb =~ m,^http?://,) {
+            my $uri  = join('/', $localmetadb, $module);
+            my $yaml = $self->get($uri);
+            $meta = $self->parse_meta_string($yaml);
+        } else {
+            # local directory
+            use App::cpanminus::LocalMetaDB;
+            $filelocalmetadb ||= LocalMetaDB->new("$localmetadb/00index.lmdb");
+            $meta = $filelocalmetadb->resolve($module);
+        }
         if ($meta->{url}) {
             my $url = $meta->{url};
             if ($self->{local_auth_user}) {
-               my $secret = join(':',
-                                 $self->{local_auth_user},
-                                 $self->{local_auth_pass});
-               $url =~ s,^http://,http://$secret@,;
+                my $secret = join(':',
+                                  $self->{local_auth_user},
+                                  $self->{local_auth_pass});
+                $url =~ s,^(http?://),$1$secret@,;
             }
             $self->chat("$module found on localmetadb ($url)\n");
             return { uris => [ $url ], version => $meta->{version} };
         }
-   }
+    }
+    if ($self->{no_cpan}) {
+        $self->diag_fail("Finding $module on localmetadb failed.");
+        return;
+    }
 
     $self->chat("Searching $module on cpanmetadb ...\n");
     my $uri  = "http://cpanmetadb.appspot.com/v1.0/package/$module";

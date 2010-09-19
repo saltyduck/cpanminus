@@ -321,6 +321,51 @@ $fatpacked{"App/cpanminus.pm"} = <<'APP_CPANMINUS';
   1;
 APP_CPANMINUS
 
+$fatpacked{"App/cpanminus/LocalMetaDB.pm"} = <<'APP_CPANMINUS_LOCALMETADB';
+  package App::cpanminus::LocalMetaDB;
+  use strict;
+  use warnings;
+  
+  sub new {
+      my ($class, $dbfile) = @_;
+  
+      my $self = bless { db => {}, file => $dbfile }, $class;
+      $self->read_data();
+      return $self;
+  }
+  
+  sub read_data {
+      my $self = shift;
+      open my $d, $self->{file} or die $self->{file}, ": $!";
+      while (<$d>) {
+          next if /^#/ || /^\s+$/; # skip comment or empty line
+          my ($module_name, $url, $version) = split;
+          defined $version or $version = "0";
+          unless ($url) {
+              # we assume standard module tar.gz filename
+              $url = $module_name;
+              $url =~ m!/([^/]+)-([\d.]+)\.tar\.gz$!
+                  or die "can't guess module name";
+              ($module_name, $version) = ($1, $2);
+              $module_name =~ s!-!::!sg;
+          }
+          $self->{db}{$module_name} = [$url, $version];
+      }
+      close $d;
+      return $self;
+  }
+  
+  sub resolve {
+      my ($self, $module_name) = @_;
+  
+      my $meta = $self->{db}{$module_name};
+      return unless $meta;
+      return { url => $meta->[0], version => $meta->[1] };
+  }
+  
+  1;
+APP_CPANMINUS_LOCALMETADB
+
 $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
   package App::cpanminus::script;
   use strict;
@@ -371,6 +416,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           local_metadb => ($ENV{CPANM_LOCAL_METADB} || ''),
           local_auth_user => '',
           local_auth_pass => '',
+          no_cpan => 0,
           @_,
       }, $class;
   }
@@ -418,6 +464,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           'local-metadb=s' => \$self->{local_metadb},
           'u|user=s'       =>  \$self->{local_auth_user},
           'p|pass=s'       => \$self->{local_auth_pass},
+          'nocpan'       => \sub { $self->{no_cpan} = 1; },
       );
   
       $self->{argv} = \@ARGV;
@@ -494,26 +541,41 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
       return $self->parse_meta_string($meta_yml);
   }
   
+  my $filelocalmetadb;
+  
   sub search_module {
       my($self, $module) = @_;
   
       if ($self->{local_metadb}) {
+          my $localmetadb = $self->{local_metadb};
           $self->chat("Searching $module on local metadb ...\n");
-          my $uri  = join('/', $self->{local_metadb}, $module);
-          my $yaml = $self->get($uri);
-          my $meta = $self->parse_meta_string($yaml);
+          my $meta;
+          if ($localmetadb =~ m,^http?://,) {
+              my $uri  = join('/', $localmetadb, $module);
+              my $yaml = $self->get($uri);
+              $meta = $self->parse_meta_string($yaml);
+          } else {
+              # local directory
+              use App::cpanminus::LocalMetaDB;
+              $filelocalmetadb ||= LocalMetaDB->new("$localmetadb/00index.lmdb");
+              $meta = $filelocalmetadb->resolve($module);
+          }
           if ($meta->{url}) {
               my $url = $meta->{url};
               if ($self->{local_auth_user}) {
-                 my $secret = join(':',
-                                   $self->{local_auth_user},
-                                   $self->{local_auth_pass});
-                 $url =~ s,^http://,http://$secret@,;
+                  my $secret = join(':',
+                                    $self->{local_auth_user},
+                                    $self->{local_auth_pass});
+                  $url =~ s,^(http?://),$1$secret@,;
               }
               $self->chat("$module found on localmetadb ($url)\n");
               return { uris => [ $url ], version => $meta->{version} };
           }
-     }
+      }
+      if ($self->{no_cpan}) {
+          $self->diag_fail("Finding $module on localmetadb failed.");
+          return;
+      }
   
       $self->chat("Searching $module on cpanmetadb ...\n");
       my $uri  = "http://cpanmetadb.appspot.com/v1.0/package/$module";
