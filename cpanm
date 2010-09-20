@@ -417,6 +417,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           local_auth_user => '',
           local_auth_pass => '',
           no_cpan => 0,
+          startdir => Cwd::cwd,
           @_,
       }, $class;
   }
@@ -464,7 +465,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           'local-metadb=s' => \$self->{local_metadb},
           'u|user=s'       =>  \$self->{local_auth_user},
           'p|pass=s'       => \$self->{local_auth_pass},
-          'nocpan'       => \sub { $self->{no_cpan} = 1; },
+          'nocpan!'       => \$self->{no_cpan},
       );
   
       $self->{argv} = \@ARGV;
@@ -557,7 +558,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           } else {
               # local directory
               use App::cpanminus::LocalMetaDB;
-              $filelocalmetadb ||= LocalMetaDB->new("$localmetadb/00index.lmdb");
+              $filelocalmetadb ||= App::cpanminus::LocalMetaDB->new("$localmetadb/00index.lmdb");
               $meta = $filelocalmetadb->resolve($module);
           }
           if ($meta->{url}) {
@@ -1117,6 +1118,14 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
   
       for my $uri (@{$dist->{uris}}) {
           $self->diag_progress("Fetching $uri");
+  
+          if ($uri =~ s,^local://,,) {
+              my $file = join('/', $self->{startdir}, $uri);
+              $self->diag_ok;
+              my $dir = $self->unpack($file);
+              next unless $dir; # unpack failed
+              return $dist, $dir;
+          }
   
           # Ugh, $dist->{filename} can contain sub directory
           my $filename = $dist->{filename} || $uri;

@@ -9,6 +9,7 @@ fatlib/Module/Metadata.pm
 fatlib/Module/Metadata/Version.pm
 fatlib/Parse/CPAN/Meta.pm
 lib/App/cpanminus.pm
+lib/App/cpanminus/LocalMetaDB.pm
 lib/App/cpanminus/script.pm
 Makefile.PL
 MANIFEST			This list of files
@@ -36,6 +37,7 @@ README
 script/build.PL
 script/cpanm.PL
 t/happy_cpantesters.t
+testdist/00index.lmdb
 testdist/Foo/Foo.pm
 testdist/Foo/Makefile.PL
 testdist/Foo/MANIFEST
@@ -47,6 +49,7 @@ testdist/HelloWorld-0.01/ppport.h
 testdist/HelloWorld-0.02/HelloWorld.pm
 testdist/HelloWorld-0.02/Makefile.PL
 testdist/HelloWorld-0.02/MANIFEST
+testdist/LocalModule-0.01.tar.gz
 testdist/TestDist-DepFail/Makefile.PL
 testdist/TestDist-DepFail/MANIFEST
 testdist/TestFail/Makefile.PL
@@ -54,6 +57,8 @@ testdist/TestFail/MANIFEST
 testdist/TestFail/t/fail.t
 xt/commands/local_lib_contained.t
 xt/commands/local_versions.t
+xt/commands/localmetadb.t
+xt/commands/nocpan.t
 xt/commands/skip_installed.t
 xt/enhancement/bailout.t
 xt/enhancement/deprecated.t
