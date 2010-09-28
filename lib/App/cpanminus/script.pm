@@ -286,6 +286,7 @@ Options:
   --local-metadb            Specify the your local CPAN metadb
   -u,--user                 Specify username if your local repository needs authentification.
   -p,--pass                 Specify password if your local repository needs authentification.
+  --nocpan		    Do NOT search CPAN.
 
 Commands:
   --self-upgrade            upgrades itself
@@ -751,7 +752,7 @@ sub fetch_module {
         $self->diag_progress("Fetching $uri");
 
         if ($uri =~ s,^local://,,) {
-            my $file = join('/', $self->{startdir}, $uri);
+            my $file = join('/', $self->{startdir}, $self->{local_metadb}, $uri);
             $self->diag_ok;
             my $dir = $self->unpack($file);
             next unless $dir; # unpack failed
