@@ -487,6 +487,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
   
       $self->setup_home;
       $self->init_tools;
+      $self->setup_filelocalmetadb;
   
       if (my $action = $self->{action}) {
           $self->$action() and return 1;
@@ -544,6 +545,14 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
   
   my $filelocalmetadb;
   
+  sub setup_filelocalmetadb {
+      my $self = shift;
+      return unless $self->{local_metadb};
+      return if $self->{local_metadb} =~ m{http?://};
+      my $p = File::Spec->catfile($self->{local_metadb}, '00index.lmdb');
+      $self->{filelocalmetadb} = App::cpanminus::LocalMetaDB->new($p);
+  }
+  
   sub search_module {
       my($self, $module) = @_;
   
@@ -558,8 +567,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           } else {
               # local directory
               use App::cpanminus::LocalMetaDB;
-              $filelocalmetadb ||= App::cpanminus::LocalMetaDB->new("$localmetadb/00index.lmdb");
-              $meta = $filelocalmetadb->resolve($module);
+              $meta = $self->{filelocalmetadb}->resolve($module);
           }
           if ($meta->{url}) {
               my $url = $meta->{url};
@@ -655,6 +663,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
     --local-metadb            Specify the your local CPAN metadb
     -u,--user                 Specify username if your local repository needs authentification.
     -p,--pass                 Specify password if your local repository needs authentification.
+    --nocpan		    Do NOT search CPAN.
   
   Commands:
     --self-upgrade            upgrades itself
@@ -1120,7 +1129,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           $self->diag_progress("Fetching $uri");
   
           if ($uri =~ s,^local://,,) {
-              my $file = join('/', $self->{startdir}, $uri);
+              my $file = join('/', $self->{startdir}, $self->{local_metadb}, $uri);
               $self->diag_ok;
               my $dir = $self->unpack($file);
               next unless $dir; # unpack failed

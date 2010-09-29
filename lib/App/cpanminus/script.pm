@@ -118,6 +118,7 @@ sub doit {
 
     $self->setup_home;
     $self->init_tools;
+    $self->setup_filelocalmetadb;
 
     if (my $action = $self->{action}) {
         $self->$action() and return 1;
@@ -175,6 +176,14 @@ sub fetch_meta {
 
 my $filelocalmetadb;
 
+sub setup_filelocalmetadb {
+    my $self = shift;
+    return unless $self->{local_metadb};
+    return if $self->{local_metadb} =~ m{http?://};
+    my $p = File::Spec->catfile($self->{local_metadb}, '00index.lmdb');
+    $self->{filelocalmetadb} = App::cpanminus::LocalMetaDB->new($p);
+}
+
 sub search_module {
     my($self, $module) = @_;
 
@@ -189,8 +198,7 @@ sub search_module {
         } else {
             # local directory
             use App::cpanminus::LocalMetaDB;
-            $filelocalmetadb ||= App::cpanminus::LocalMetaDB->new("$localmetadb/00index.lmdb");
-            $meta = $filelocalmetadb->resolve($module);
+            $meta = $self->{filelocalmetadb}->resolve($module);
         }
         if ($meta->{url}) {
             my $url = $meta->{url};
