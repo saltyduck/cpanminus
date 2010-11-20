@@ -154,6 +154,20 @@ can specify multiple mirror URLs by repeating the command line option.
 Defaults to C<http://search.cpan.org/CPAN> which is a geo location
 aware redirector.
 
+=item --mirror-only
+
+Download the mirror's 02packages.details.txt.gz index file instead of
+querying the CPAN Meta DB.
+
+Select this option if you are using a local mirror of CPAN, such as
+minicpan when you're offline, or your own CPAN index (a.k.a darkpan).
+
+B<Tip:> It might be useful if you name these mirror options with your
+shell aliases, like:
+
+  alias minicpanm='cpanm --mirror ~/minicpan --mirror-only'
+  alias darkpan='cpanm --mirror http://mycompany.example.com/DPAN --mirror-only'
+
 =item --prompt
 
 Prompts when a test fails so that you can skip, force install, retry
@@ -202,11 +216,35 @@ include path.
 Defaults to true, and you can disable that with
 C<--no-uninst-shadows>.
 
+=item --auto-cleanup
+
+Specifies the number of days in whcih cpanm's work directories
+expire. Defaults to 7, which means old work directories will be
+cleaned up in one week.
+
+You can set the value to C<0> to make cpan never cleanup those
+directories.
+
 =item --lwp
 
 Uses L<LWP> module to download stuff over HTTP. Defaults to true, and
 you can say C<--no-lwp> to disable using LWP, when you want to upgrade
 LWP from CPAN on some broken perl systems.
+
+=item --wget
+
+Uses GNU Wget (if available) to download stuff. Defaults to true, and
+you can say C<--no-wget> to disable using Wget (versions of Wget older
+than 1.9 don't support the C<--retry-connrefused> option used by cpanm).
+
+=item --curl
+
+Uses cURL (if available) to download stuff. Defaults to true, and
+you can say C<--no-curl> to disable using cURL.
+
+Normally with C<--lwp>, C<--wget> and C<--curl> options set to true
+(which is the default) cpanm tries L<LWP>, Wget, cURL and L<HTTP::Lite>
+(in that order) and uses the first one available.
 
 =back
 

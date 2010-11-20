@@ -1,5 +1,26 @@
 See http://github.com/miyagawa/cpanminus/ for the latest development.
 
+1.1002  Tue Nov 16 18:27:19 PST 2010
+   - Implemented --auto-cleanup and set that to 7 (days) by default
+
+1.1001  Fri Nov 12 12:37:31 PST 2010
+   - Fixed the mirror index scanning code to uncompress on-disk and scan line-by-line
+     to be less RAM hoggy (hobbs)
+   - Fixed docs
+
+1.1000  Thu Nov 11 23:56:46 PST 2010
+   - Added --mirror-only to support minicpan and DarkPAN (jonallen, xdg, tokuhirom)
+
+1.0015  Fri Sep 24 16:51:49 PDT 2010
+   - Fixed the output introcuced in the previous release
+
+1.0014  Tue Sep 21 12:42:28 PDT 2010
+   - Added "--> Working on ..." output for a better understanding of overall build process
+
+1.0013  Sun Sep 12 12:46:36 PDT 2010
+   - Added --no-wget and --no-curl to bootstrap LWP in an environment with old
+     versions of wget/curl (rsp)
+
 1.0012  Fri Aug 20 12:46:34 PDT 2010
    - version check with -L and -l was failing with --skip-installed default. Now fixed (reported by leedo) #55
    - Fixed the code to find root of tarballs (perlpilot)

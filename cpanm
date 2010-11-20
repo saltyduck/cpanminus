@@ -18,7 +18,7 @@ my %fatpacked;
 
 $fatpacked{"App/cpanminus.pm"} = <<'APP_CPANMINUS';
   package App::cpanminus;
-  our $VERSION = "1.0012";
+  our $VERSION = "1.1002";
   
   =head1 NAME
   
@@ -381,7 +381,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
   use constant WIN32 => $^O eq 'MSWin32';
   use constant SUNOS => $^O eq 'solaris';
   
-  our $VERSION = "1.0012";
+  our $VERSION = "1.1002";
   $VERSION = eval $VERSION;
   
   my $quote = WIN32 ? q/"/ : q/'/; # " make emacs happy
@@ -403,6 +403,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           interactive => undef,
           log => undef,
           mirrors => [],
+          mirror_only => undef,
           perl => $^X,
           argv => [],
           local_lib => undef,
@@ -411,8 +412,11 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           prompt => undef,
           configure_timeout => 60,
           try_lwp => 1,
+          try_wget => 1,
+          try_curl => 1,
           uninstall_shadows => 1,
           skip_installed => 1,
+          auto_cleanup => 7, # days
           local_metadb => ($ENV{CPANM_LOCAL_METADB} || ''),
           local_auth_user => '',
           local_auth_pass => '',
@@ -451,6 +455,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           'l|local-lib=s' => sub { $self->{local_lib} = $self->maybe_abs($_[1]) },
           'L|local-lib-contained=s' => sub { $self->{local_lib} = $self->maybe_abs($_[1]); $self->{self_contained} = 1 },
           'mirror=s@' => $self->{mirrors},
+          'mirror-only!' => \$self->{mirror_only},
           'prompt!'   => \$self->{prompt},
           'installdeps' => \$self->{installdeps},
           'skip-installed!' => \$self->{skip_installed},
@@ -462,6 +467,9 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           'self-upgrade' => sub { $self->{cmd} = 'install'; $self->{skip_installed} = 1; push @ARGV, 'App::cpanminus' },
           'uninst-shadows!'  => \$self->{uninstall_shadows},
           'lwp!'    => \$self->{try_lwp},
+          'wget!'   => \$self->{try_wget},
+          'curl!'   => \$self->{try_curl},
+          'auto-cleanup=s' => \$self->{auto_cleanup},
           'local-metadb=s' => \$self->{local_metadb},
           'u|user=s'       =>  \$self->{local_auth_user},
           'p|pass=s'       => \$self->{local_auth_pass},
@@ -503,6 +511,10 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
               or push @fail, $module;
       }
   
+      if ($self->{base} && $self->{auto_cleanup}) {
+          $self->cleanup_workdirs;
+      }
+  
       return !@fail;
   }
   
@@ -539,8 +551,60 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
   sub fetch_meta {
       my($self, $dist) = @_;
   
-      my $meta_yml = $self->get("http://cpansearch.perl.org/src/$dist->{cpanid}/$dist->{distvname}/META.yml");
-      return $self->parse_meta_string($meta_yml);
+      unless ($self->{mirror_only}) {
+          my $meta_yml = $self->get("http://cpansearch.perl.org/src/$dist->{cpanid}/$dist->{distvname}/META.yml");
+          return $self->parse_meta_string($meta_yml);
+      }
+  
+      return undef;
+  }
+  
+  sub package_index_for {
+    my ($self, $mirror) = @_;
+    return $self->source_for($mirror) . "/02packages.details.txt";
+  }
+  
+  sub generate_mirror_index {
+    my ($self, $mirror) = @_;
+    my $file = $self->package_index_for($mirror);
+    my $gz_file = $file . '.gz';
+  
+    unless (-e $file && (stat $file)[9] >= (stat $gz_file)[9]) {
+      $self->chat("Uncompressing index file...\n");
+      if (eval {require Compress::Zlib}) {
+        my $gz = Compress::Zlib::gzopen($gz_file, "rb")
+          or do { $self->diag_fail("$Compress::Zlib::gzerrno opening compressed index"); return};
+        open my $fh, '>', $file
+          or do { $self->diag_fail("$! opening uncompressed index for write"); return };
+        my $buffer;
+        while (my $status = $gz->gzread($buffer)) {
+          if ($status < 0) {
+            $self->diag_fail($gz->gzerror . " reading compressed index");
+            return;
+          }
+          print $fh $buffer;
+        }
+      } else {
+        unless (system("gunzip -c $gz_file > $file")) {
+          $self->diag_fail("Cannot uncompress -- please install gunzip or Compress::Zlib");
+          return;
+        }
+      }
+    }
+    return 1;
+  }
+  
+  sub search_mirror_index {
+    my ($self, $mirror, $module) = @_;
+  
+    open my $fh, '<', $self->package_index_for($mirror) or return;
+    while (<$fh>) {
+      if (m!^\Q$module\E\s+[\w\.]+\s+(.*)!m) {
+        return $self->cpan_module($module, $1);
+      }
+    }
+  
+    return;
   }
   
   my $filelocalmetadb;
@@ -586,31 +650,61 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           return;
       }
   
-      $self->chat("Searching $module on cpanmetadb ...\n");
-      my $uri  = "http://cpanmetadb.appspot.com/v1.0/package/$module";
-      my $yaml = $self->get($uri);
-      my $meta = $self->parse_meta_string($yaml);
-      if ($meta->{distfile}) {
-          return $self->cpan_module($module, $meta->{distfile}, $meta->{version});
+      unless ($self->{mirror_only}) {
+          $self->chat("Searching $module on cpanmetadb ...\n");
+          my $uri  = "http://cpanmetadb.appspot.com/v1.0/package/$module";
+          my $yaml = $self->get($uri);
+          my $meta = $self->parse_meta_string($yaml);
+          if ($meta->{distfile}) {
+              return $self->cpan_module($module, $meta->{distfile}, $meta->{version});
+          }
+  
+          $self->diag_fail(join(' ',
+                                "Finding $module on",
+                                ($self->{local_metadb}
+                                 ? "local metadb($self->{local_metadb}) and"
+                                 : () ),
+                                "cpanmetadb failed."));
+  
+          $self->chat("Searching $module on search.cpan.org ...\n");
+          my $uri  = "http://search.cpan.org/perldoc?$module";
+          my $html = $self->get($uri);
+          $html =~ m!<a href="/CPAN/authors/id/(.*?\.(?:tar\.gz|tgz|tar\.bz2|zip))">!
+              and return $self->cpan_module($module, $1);
+  
+          $self->diag_fail("Finding $module on search.cpan.org failed.");
       }
   
-      $self->diag_fail(join(' ',
-                            "Finding $module on",
-                            ($self->{local_metadb}
-                             ? "local metadb($self->{local_metadb}) and"
-                             : ()
-                            ),
-                            "cpanmetadb failed."));
+      MIRROR: for my $mirror (@{ $self->{mirrors} }) {
+          $self->chat("Searching $module on mirror $mirror ...\n");
+          my $name = '02packages.details.txt.gz';
+          my $uri  = "$mirror/modules/$name";
+          my $gz_file = $self->package_index_for($mirror) . '.gz';
   
-      $self->chat("Searching $module on search.cpan.org ...\n");
-      my $uri  = "http://search.cpan.org/perldoc?$module";
-      my $html = $self->get($uri);
-      $html =~ m!<a href="/CPAN/authors/id/(.*?\.(?:tar\.gz|tgz|tar\.bz2|zip))">!
-          and return $self->cpan_module($module, $1);
+          unless ($self->{pkgs}{$uri}) {
+              $self->chat("Downloading index file $uri ...\n");
+              $self->mirror($uri, $gz_file);
+              $self->generate_mirror_index($mirror) or next MIRROR;
+              $self->{pkgs}{$uri} = "!!retrieved!!";
+          }
   
-      $self->diag_fail("Finding $module on search.cpan.org failed.");
+          my $pkg = $self->search_mirror_index($mirror, $module);
+          return $pkg if $pkg;
+  
+          $self->diag_fail("Finding $module on mirror $mirror failed.");
+      }
   
       return;
+  }
+  
+  sub source_for {
+      my($self, $mirror) = @_;
+      $mirror =~ s/[^\w\.\-]+/%/g;
+  
+      my $dir = "$self->{home}/sources/$mirror";
+      File::Path::mkpath([ $dir ], 0, 0777);
+  
+      return $dir;
   }
   
   sub load_argv_from_fh {
@@ -657,9 +751,11 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
     --installdeps             Only install dependencies
     --reinstall               Reinstall the distribution even if you already have the latest version installed
     --mirror                  Specify the base URL for the mirror (e.g. http://cpan.cpantesters.org/)
+    --mirror-only             Use the mirror's index file instead of the CPAN Meta DB
     --prompt                  Prompt when configure/build/test fails
     -l,--local-lib            Specify the install base to install modules
     -L,--local-lib-contained  Specify the install base to install all non-core modules
+    --auto-cleanup            Number of days that cpanm's work directories expire in. Defaults to 7
     --local-metadb            Specify the your local CPAN metadb
     -u,--user                 Specify username if your local repository needs authentification.
     -p,--pass                 Specify password if your local repository needs authentification.
@@ -1048,6 +1144,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           $self->{mirrors} = [ 'http://search.cpan.org/CPAN' ];
       }
       for (@{$self->{mirrors}}) {
+          s!^/!file:///!;
           s!/$!!;
       }
   }
@@ -1100,6 +1197,8 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
           $self->diag("skipping $dist->{pathname}\n");
           return 1;
       }
+  
+      $self->diag("--> Working on $module\n");
   
       $dist->{dir} ||= $self->fetch_module($dist);
   
@@ -1400,13 +1499,13 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
   
       my $installed;
       if ($configure_state->{use_module_build} && -e 'Build' && -f _) {
-          $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . "$distname for $stuff");
+          $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . $distname);
           $self->build([ $self->{perl}, "./Build" ], $distname) &&
           $self->test([ $self->{perl}, "./Build", "test" ], $distname) &&
           $self->install([ $self->{perl}, "./Build", "install" ], [ "--uninst", 1 ]) &&
           $installed++;
       } elsif ($self->{make} && -e 'Makefile') {
-          $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . "$distname for $stuff");
+          $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . $distname);
           $self->build([ $self->{make} ], $distname) &&
           $self->test([ $self->{make}, "test" ], $distname) &&
           $self->install([ $self->{make}, "install" ], [ "UNINST=1" ]) &&
@@ -1560,6 +1659,27 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
       return @deps;
   }
   
+  sub cleanup_workdirs {
+      my $self = shift;
+  
+      my $expire = time - 24 * 60 * 60 * $self->{auto_cleanup};
+      my @targets;
+  
+      opendir my $dh, "$self->{home}/work";
+      while (my $e = readdir $dh) {
+          next if $e !~ /^(\d+)\.\d+$/; # {UNIX time}.{PID}
+          my $time = $1;
+          if ($time < $expire) {
+              push @targets, "$self->{home}/work/$e";
+          }
+      }
+  
+      if (@targets) {
+          $self->chat("Expiring ", scalar(@targets), " work directories.\n");
+          File::Path::rmtree(\@targets, 0, 0); # safe = 0, since blib usually doesn't have write bits
+      }
+  }
+  
   sub DESTROY {
       my $self = shift;
       $self->{at_exit}->($self) if $self->{at_exit};
@@ -1642,7 +1762,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
               return $res->header('Location') if $res->is_redirect;
               return;
           };
-      } elsif (my $wget = $self->which('wget')) {
+      } elsif ($self->{try_wget} and my $wget = $self->which('wget')) {
           $self->chat("You have $wget\n");
           $self->{_backends}{get} = sub {
               my($self, $uri) = @_;
@@ -1666,7 +1786,7 @@ $fatpacked{"App/cpanminus/script.pm"} = <<'APP_CPANMINUS_SCRIPT';
               }
               return;
           };
-      } elsif (my $curl = $self->which('curl')) {
+      } elsif ($self->{try_curl} and my $curl = $self->which('curl')) {
           $self->chat("You have $curl\n");
           $self->{_backends}{get} = sub {
               my($self, $uri) = @_;
@@ -5908,6 +6028,20 @@ can specify multiple mirror URLs by repeating the command line option.
 Defaults to C<http://search.cpan.org/CPAN> which is a geo location
 aware redirector.
 
+=item --mirror-only
+
+Download the mirror's 02packages.details.txt.gz index file instead of
+querying the CPAN Meta DB.
+
+Select this option if you are using a local mirror of CPAN, such as
+minicpan when you're offline, or your own CPAN index (a.k.a darkpan).
+
+B<Tip:> It might be useful if you name these mirror options with your
+shell aliases, like:
+
+  alias minicpanm='cpanm --mirror ~/minicpan --mirror-only'
+  alias darkpan='cpanm --mirror http://mycompany.example.com/DPAN --mirror-only'
+
 =item --prompt
 
 Prompts when a test fails so that you can skip, force install, retry
@@ -5956,11 +6090,35 @@ include path.
 Defaults to true, and you can disable that with
 C<--no-uninst-shadows>.
 
+=item --auto-cleanup
+
+Specifies the number of days in whcih cpanm's work directories
+expire. Defaults to 7, which means old work directories will be
+cleaned up in one week.
+
+You can set the value to C<0> to make cpan never cleanup those
+directories.
+
 =item --lwp
 
 Uses L<LWP> module to download stuff over HTTP. Defaults to true, and
 you can say C<--no-lwp> to disable using LWP, when you want to upgrade
 LWP from CPAN on some broken perl systems.
+
+=item --wget
+
+Uses GNU Wget (if available) to download stuff. Defaults to true, and
+you can say C<--no-wget> to disable using Wget (versions of Wget older
+than 1.9 don't support the C<--retry-connrefused> option used by cpanm).
+
+=item --curl
+
+Uses cURL (if available) to download stuff. Defaults to true, and
+you can say C<--no-curl> to disable using cURL.
+
+Normally with C<--lwp>, C<--wget> and C<--curl> options set to true
+(which is the default) cpanm tries L<LWP>, Wget, cURL and L<HTTP::Lite>
+(in that order) and uses the first one available.
 
 =back
 

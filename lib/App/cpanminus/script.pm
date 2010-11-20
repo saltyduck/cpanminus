@@ -12,7 +12,7 @@ use Parse::CPAN::Meta;
 use constant WIN32 => $^O eq 'MSWin32';
 use constant SUNOS => $^O eq 'solaris';
 
-our $VERSION = "1.0012";
+our $VERSION = "1.1002";
 $VERSION = eval $VERSION;
 
 my $quote = WIN32 ? q/"/ : q/'/; # " make emacs happy
@@ -34,6 +34,7 @@ sub new {
         interactive => undef,
         log => undef,
         mirrors => [],
+        mirror_only => undef,
         perl => $^X,
         argv => [],
         local_lib => undef,
@@ -42,8 +43,11 @@ sub new {
         prompt => undef,
         configure_timeout => 60,
         try_lwp => 1,
+        try_wget => 1,
+        try_curl => 1,
         uninstall_shadows => 1,
         skip_installed => 1,
+        auto_cleanup => 7, # days
         local_metadb => ($ENV{CPANM_LOCAL_METADB} || ''),
         local_auth_user => '',
         local_auth_pass => '',
@@ -82,6 +86,7 @@ sub parse_options {
         'l|local-lib=s' => sub { $self->{local_lib} = $self->maybe_abs($_[1]) },
         'L|local-lib-contained=s' => sub { $self->{local_lib} = $self->maybe_abs($_[1]); $self->{self_contained} = 1 },
         'mirror=s@' => $self->{mirrors},
+        'mirror-only!' => \$self->{mirror_only},
         'prompt!'   => \$self->{prompt},
         'installdeps' => \$self->{installdeps},
         'skip-installed!' => \$self->{skip_installed},
@@ -93,6 +98,9 @@ sub parse_options {
         'self-upgrade' => sub { $self->{cmd} = 'install'; $self->{skip_installed} = 1; push @ARGV, 'App::cpanminus' },
         'uninst-shadows!'  => \$self->{uninstall_shadows},
         'lwp!'    => \$self->{try_lwp},
+        'wget!'   => \$self->{try_wget},
+        'curl!'   => \$self->{try_curl},
+        'auto-cleanup=s' => \$self->{auto_cleanup},
         'local-metadb=s' => \$self->{local_metadb},
         'u|user=s'       =>  \$self->{local_auth_user},
         'p|pass=s'       => \$self->{local_auth_pass},
@@ -134,6 +142,10 @@ sub doit {
             or push @fail, $module;
     }
 
+    if ($self->{base} && $self->{auto_cleanup}) {
+        $self->cleanup_workdirs;
+    }
+
     return !@fail;
 }
 
@@ -170,8 +182,60 @@ sub setup_home {
 sub fetch_meta {
     my($self, $dist) = @_;
 
-    my $meta_yml = $self->get("http://cpansearch.perl.org/src/$dist->{cpanid}/$dist->{distvname}/META.yml");
-    return $self->parse_meta_string($meta_yml);
+    unless ($self->{mirror_only}) {
+        my $meta_yml = $self->get("http://cpansearch.perl.org/src/$dist->{cpanid}/$dist->{distvname}/META.yml");
+        return $self->parse_meta_string($meta_yml);
+    }
+
+    return undef;
+}
+
+sub package_index_for {
+  my ($self, $mirror) = @_;
+  return $self->source_for($mirror) . "/02packages.details.txt";
+}
+
+sub generate_mirror_index {
+  my ($self, $mirror) = @_;
+  my $file = $self->package_index_for($mirror);
+  my $gz_file = $file . '.gz';
+
+  unless (-e $file && (stat $file)[9] >= (stat $gz_file)[9]) {
+    $self->chat("Uncompressing index file...\n");
+    if (eval {require Compress::Zlib}) {
+      my $gz = Compress::Zlib::gzopen($gz_file, "rb")
+        or do { $self->diag_fail("$Compress::Zlib::gzerrno opening compressed index"); return};
+      open my $fh, '>', $file
+        or do { $self->diag_fail("$! opening uncompressed index for write"); return };
+      my $buffer;
+      while (my $status = $gz->gzread($buffer)) {
+        if ($status < 0) {
+          $self->diag_fail($gz->gzerror . " reading compressed index");
+          return;
+        }
+        print $fh $buffer;
+      }
+    } else {
+      unless (system("gunzip -c $gz_file > $file")) {
+        $self->diag_fail("Cannot uncompress -- please install gunzip or Compress::Zlib");
+        return;
+      }
+    }
+  }
+  return 1;
+}
+
+sub search_mirror_index {
+  my ($self, $mirror, $module) = @_;
+
+  open my $fh, '<', $self->package_index_for($mirror) or return;
+  while (<$fh>) {
+    if (m!^\Q$module\E\s+[\w\.]+\s+(.*)!m) {
+      return $self->cpan_module($module, $1);
+    }
+  }
+
+  return;
 }
 
 my $filelocalmetadb;
@@ -217,31 +281,61 @@ sub search_module {
         return;
     }
 
-    $self->chat("Searching $module on cpanmetadb ...\n");
-    my $uri  = "http://cpanmetadb.appspot.com/v1.0/package/$module";
-    my $yaml = $self->get($uri);
-    my $meta = $self->parse_meta_string($yaml);
-    if ($meta->{distfile}) {
-        return $self->cpan_module($module, $meta->{distfile}, $meta->{version});
+    unless ($self->{mirror_only}) {
+        $self->chat("Searching $module on cpanmetadb ...\n");
+        my $uri  = "http://cpanmetadb.appspot.com/v1.0/package/$module";
+        my $yaml = $self->get($uri);
+        my $meta = $self->parse_meta_string($yaml);
+        if ($meta->{distfile}) {
+            return $self->cpan_module($module, $meta->{distfile}, $meta->{version});
+        }
+
+        $self->diag_fail(join(' ',
+                              "Finding $module on",
+                              ($self->{local_metadb}
+                               ? "local metadb($self->{local_metadb}) and"
+                               : () ),
+                              "cpanmetadb failed."));
+
+        $self->chat("Searching $module on search.cpan.org ...\n");
+        my $uri  = "http://search.cpan.org/perldoc?$module";
+        my $html = $self->get($uri);
+        $html =~ m!<a href="/CPAN/authors/id/(.*?\.(?:tar\.gz|tgz|tar\.bz2|zip))">!
+            and return $self->cpan_module($module, $1);
+
+        $self->diag_fail("Finding $module on search.cpan.org failed.");
     }
 
-    $self->diag_fail(join(' ',
-                          "Finding $module on",
-                          ($self->{local_metadb}
-                           ? "local metadb($self->{local_metadb}) and"
-                           : ()
-                          ),
-                          "cpanmetadb failed."));
+    MIRROR: for my $mirror (@{ $self->{mirrors} }) {
+        $self->chat("Searching $module on mirror $mirror ...\n");
+        my $name = '02packages.details.txt.gz';
+        my $uri  = "$mirror/modules/$name";
+        my $gz_file = $self->package_index_for($mirror) . '.gz';
 
-    $self->chat("Searching $module on search.cpan.org ...\n");
-    my $uri  = "http://search.cpan.org/perldoc?$module";
-    my $html = $self->get($uri);
-    $html =~ m!<a href="/CPAN/authors/id/(.*?\.(?:tar\.gz|tgz|tar\.bz2|zip))">!
-        and return $self->cpan_module($module, $1);
+        unless ($self->{pkgs}{$uri}) {
+            $self->chat("Downloading index file $uri ...\n");
+            $self->mirror($uri, $gz_file);
+            $self->generate_mirror_index($mirror) or next MIRROR;
+            $self->{pkgs}{$uri} = "!!retrieved!!";
+        }
 
-    $self->diag_fail("Finding $module on search.cpan.org failed.");
+        my $pkg = $self->search_mirror_index($mirror, $module);
+        return $pkg if $pkg;
+
+        $self->diag_fail("Finding $module on mirror $mirror failed.");
+    }
 
     return;
+}
+
+sub source_for {
+    my($self, $mirror) = @_;
+    $mirror =~ s/[^\w\.\-]+/%/g;
+
+    my $dir = "$self->{home}/sources/$mirror";
+    File::Path::mkpath([ $dir ], 0, 0777);
+
+    return $dir;
 }
 
 sub load_argv_from_fh {
@@ -288,9 +382,11 @@ Options:
   --installdeps             Only install dependencies
   --reinstall               Reinstall the distribution even if you already have the latest version installed
   --mirror                  Specify the base URL for the mirror (e.g. http://cpan.cpantesters.org/)
+  --mirror-only             Use the mirror's index file instead of the CPAN Meta DB
   --prompt                  Prompt when configure/build/test fails
   -l,--local-lib            Specify the install base to install modules
   -L,--local-lib-contained  Specify the install base to install all non-core modules
+  --auto-cleanup            Number of days that cpanm's work directories expire in. Defaults to 7
   --local-metadb            Specify the your local CPAN metadb
   -u,--user                 Specify username if your local repository needs authentification.
   -p,--pass                 Specify password if your local repository needs authentification.
@@ -679,6 +775,7 @@ sub configure_mirrors {
         $self->{mirrors} = [ 'http://search.cpan.org/CPAN' ];
     }
     for (@{$self->{mirrors}}) {
+        s!^/!file:///!;
         s!/$!!;
     }
 }
@@ -731,6 +828,8 @@ sub install_module {
         $self->diag("skipping $dist->{pathname}\n");
         return 1;
     }
+
+    $self->diag("--> Working on $module\n");
 
     $dist->{dir} ||= $self->fetch_module($dist);
 
@@ -1031,13 +1130,13 @@ sub build_stuff {
 
     my $installed;
     if ($configure_state->{use_module_build} && -e 'Build' && -f _) {
-        $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . "$distname for $stuff");
+        $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . $distname);
         $self->build([ $self->{perl}, "./Build" ], $distname) &&
         $self->test([ $self->{perl}, "./Build", "test" ], $distname) &&
         $self->install([ $self->{perl}, "./Build", "install" ], [ "--uninst", 1 ]) &&
         $installed++;
     } elsif ($self->{make} && -e 'Makefile') {
-        $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . "$distname for $stuff");
+        $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . $distname);
         $self->build([ $self->{make} ], $distname) &&
         $self->test([ $self->{make}, "test" ], $distname) &&
         $self->install([ $self->{make}, "install" ], [ "UNINST=1" ]) &&
@@ -1191,6 +1290,27 @@ sub extract_requires {
     return @deps;
 }
 
+sub cleanup_workdirs {
+    my $self = shift;
+
+    my $expire = time - 24 * 60 * 60 * $self->{auto_cleanup};
+    my @targets;
+
+    opendir my $dh, "$self->{home}/work";
+    while (my $e = readdir $dh) {
+        next if $e !~ /^(\d+)\.\d+$/; # {UNIX time}.{PID}
+        my $time = $1;
+        if ($time < $expire) {
+            push @targets, "$self->{home}/work/$e";
+        }
+    }
+
+    if (@targets) {
+        $self->chat("Expiring ", scalar(@targets), " work directories.\n");
+        File::Path::rmtree(\@targets, 0, 0); # safe = 0, since blib usually doesn't have write bits
+    }
+}
+
 sub DESTROY {
     my $self = shift;
     $self->{at_exit}->($self) if $self->{at_exit};
@@ -1273,7 +1393,7 @@ sub init_tools {
             return $res->header('Location') if $res->is_redirect;
             return;
         };
-    } elsif (my $wget = $self->which('wget')) {
+    } elsif ($self->{try_wget} and my $wget = $self->which('wget')) {
         $self->chat("You have $wget\n");
         $self->{_backends}{get} = sub {
             my($self, $uri) = @_;
@@ -1297,7 +1417,7 @@ sub init_tools {
             }
             return;
         };
-    } elsif (my $curl = $self->which('curl')) {
+    } elsif ($self->{try_curl} and my $curl = $self->which('curl')) {
         $self->chat("You have $curl\n");
         $self->{_backends}{get} = sub {
             my($self, $uri) = @_;
