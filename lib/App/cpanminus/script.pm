@@ -859,7 +859,11 @@ sub fetch_module {
         $self->diag_progress("Fetching $uri");
 
         if ($uri =~ s,^local://,,) {
-            my $file = join('/', $self->{startdir}, $self->{local_metadb}, $uri);
+            my $file = (File::Spec->file_name_is_absolute($self->{local_metadb})
+                        ? File::Spec->catfile($self->{local_metadb}, $uri)
+                        : File::Spec->catfile($self->{startdir},
+                                              $self->{local_metadb},
+                                              $uri));
             $self->diag_ok;
             my $dir = $self->unpack($file);
             next unless $dir; # unpack failed
