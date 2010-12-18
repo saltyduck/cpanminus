@@ -12,7 +12,7 @@ use Parse::CPAN::Meta;
 use constant WIN32 => $^O eq 'MSWin32';
 use constant SUNOS => $^O eq 'solaris';
 
-our $VERSION = "1.1004";
+our $VERSION = "1.1006";
 $VERSION = eval $VERSION;
 
 my $quote = WIN32 ? q/"/ : q/'/; # " make emacs happy
@@ -138,6 +138,10 @@ sub doit {
 
     my @fail;
     for my $module (@{$self->{argv}}) {
+        if ($module =~ s/\.pm$//i) {
+            my ($volume, $dirs, $file) = File::Spec->splitpath($module);
+            $module = join '::', grep { $_ } File::Spec->splitdir($dirs), $file;
+        }
         $self->install_module($module, 0)
             or push @fail, $module;
     }
@@ -693,7 +697,7 @@ sub configure {
     my($self, $cmd) = @_;
 
     # trick AutoInstall
-    local $ENV{PERL5_CPAN_IS_RUNNING} = $ENV{PERL5_CPANPLUS_IS_RUNNING} = $$;
+    local $ENV{PERL5_CPAN_IS_RUNNING} = local $ENV{PERL5_CPANPLUS_IS_RUNNING} = $$;
 
     # e.g. skip CPAN configuration on local::lib
     local $ENV{PERL5_CPANM_IS_RUNNING} = $$;
