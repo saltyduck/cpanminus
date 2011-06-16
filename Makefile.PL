@@ -8,7 +8,7 @@ You can pretend to be an author by running it with:
   perl Makefile.PL --author
 
 You should install local::lib, Parse::CPAN::Meta, Module::Metadata,
-App::FatPacker and HTTP::Lite before doing so.
+App::FatPacker and HTTP::Tiny before doing so.
 
 Do not commit the changes to `cpanm` standalone executable. We only
 commit changes to this file whenever we tag a new CPAN release.
@@ -44,7 +44,6 @@ WriteMakefile(
         'Module::Build' => 0.36,
         'ExtUtils::MakeMaker' => 6.31,
         'ExtUtils::Install' => 1.46,
-        ($ENV{PERL5_CPAN_IS_RUNNING} || $ENV{PERL5_CPANPLUS_IS_RUNNING}) ? (LWP => 5.828) : (),
     },
     LICENSE => 'perl',
     EXE_FILES => [ 'bin/cpanm' ],

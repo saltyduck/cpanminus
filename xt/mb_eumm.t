@@ -2,21 +2,21 @@ use strict;
 use Test::More;
 use xt::Run;
 
-# NOTE these tests take so long time, so added --notest here
+$ENV{NOTEST} = 1;
 
-run "--notest", "ExtUtils::Install";
+run "ExtUtils::Install";
 like last_build_log, qr/Running Makefile\.PL/, "ExtUtils::Install is M::B dep, should use Makefile.PL";
 
-run "--notest", "Params::Validate";
+run "Params::Validate";
 like last_build_log, qr/Running Build\.PL/, "Build.PL only";
 
-run "--notest", "URI::Fetch";
+run "BTROTT/URI-Fetch-0.08.tar.gz";
 like last_build_log, qr/Running Build\.PL/, "Build.PL and Makefile.PL";
 
-run "--notest", "CGI";
+run "CGI";
 like last_build_log, qr/Running Makefile\.PL/, "Makefile.PL only";
 
-run "--notest", "Module::Build";
+run "Module::Build";
 like last_build_log, qr/Running Build\.PL/, "Module::Build should build itself";
 
 done_testing;

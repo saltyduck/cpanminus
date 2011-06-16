@@ -3,17 +3,18 @@ use strict;
 use Config;
 use Cwd ();
 use File::Basename ();
+use File::Find ();
 use File::Path ();
 use File::Spec ();
 use File::Copy ();
 use Getopt::Long ();
 use Parse::CPAN::Meta;
+use Symbol ();
 
 use constant WIN32 => $^O eq 'MSWin32';
 use constant SUNOS => $^O eq 'solaris';
 
-our $VERSION = "1.1006";
-$VERSION = eval $VERSION;
+our $VERSION = "1.4008";
 
 my $quote = WIN32 ? q/"/ : q/'/; # " make emacs happy
 
@@ -45,14 +46,23 @@ sub new {
         try_lwp => 1,
         try_wget => 1,
         try_curl => 1,
-        uninstall_shadows => 1,
+        uninstall_shadows => ($] < 5.012),
         skip_installed => 1,
         auto_cleanup => 7, # days
+        pod2man => 1,
+        installed_dists => 0,
+        scandeps => 0,
+        scandeps_tree => [],
+        format   => 'tree',
+        save_dists => undef,
+        skip_configure => 0,
+
         local_metadb => ($ENV{CPANM_LOCAL_METADB} || ''),
         local_auth_user => '',
         local_auth_pass => '',
         no_cpan => 0,
         startdir => Cwd::cwd,
+
         @_,
     }, $class;
 }
@@ -69,10 +79,6 @@ sub parse_options {
     push @ARGV, split /\s+/, $self->env('OPT');
     push @ARGV, @_;
 
-    if ($0 ne '-' && !-t STDIN){ # e.g. $ cpanm < author/requires.cpanm
-        push @ARGV, $self->load_argv_from_fh(\*STDIN);
-    }
-
     Getopt::Long::Configure("bundling");
     Getopt::Long::GetOptions(
         'f|force'   => sub { $self->{skip_installed} = 0; $self->{force} = 1 },
@@ -84,7 +90,11 @@ sub parse_options {
         'V|version' => sub { $self->{action} = 'show_version' },
         'perl=s'    => \$self->{perl},
         'l|local-lib=s' => sub { $self->{local_lib} = $self->maybe_abs($_[1]) },
-        'L|local-lib-contained=s' => sub { $self->{local_lib} = $self->maybe_abs($_[1]); $self->{self_contained} = 1 },
+        'L|local-lib-contained=s' => sub {
+            $self->{local_lib} = $self->maybe_abs($_[1]);
+            $self->{self_contained} = 1;
+            $self->{pod2man} = undef;
+        },
         'mirror=s@' => $self->{mirrors},
         'mirror-only!' => \$self->{mirror_only},
         'prompt!'   => \$self->{prompt},
@@ -101,11 +111,24 @@ sub parse_options {
         'wget!'   => \$self->{try_wget},
         'curl!'   => \$self->{try_curl},
         'auto-cleanup=s' => \$self->{auto_cleanup},
+        'man-pages!' => \$self->{pod2man},
+        'scandeps'   => \$self->{scandeps},
+        'format=s'   => \$self->{format},
+        'save-dists=s' => sub {
+            $self->{save_dists} = $self->maybe_abs($_[1]);
+        },
+        'skip-configure!' => \$self->{skip_configure},
+
         'local-metadb=s' => \$self->{local_metadb},
         'u|user=s'       =>  \$self->{local_auth_user},
         'p|pass=s'       => \$self->{local_auth_pass},
         'nocpan!'       => \$self->{no_cpan},
     );
+
+    if (!@ARGV && $0 ne '-' && !-t STDIN){ # e.g. # cpanm < author/requires.cpanm
+        push @ARGV, $self->load_argv_from_fh(\*STDIN);
+        $self->{load_from_stdin} = 1;
+    }
 
     $self->{argv} = \@ARGV;
 }
@@ -116,7 +139,8 @@ sub check_libs {
 
     $self->bootstrap_local_lib;
     if (@{$self->{bootstrap_deps} || []}) {
-        local $self->{force} = 1; # to force install EUMM
+        local $self->{notest} = 1; # test failure in bootstrap should be tolerated
+        local $self->{scandeps} = 0;
         $self->install_deps(Cwd::cwd, 0, @{$self->{bootstrap_deps}});
     }
 }
@@ -132,7 +156,8 @@ sub doit {
         $self->$action() and return 1;
     }
 
-    $self->show_help(1) unless @{$self->{argv}};
+    $self->show_help(1)
+        unless @{$self->{argv}} or $self->{load_from_stdin};
 
     $self->configure_mirrors;
 
@@ -148,6 +173,15 @@ sub doit {
 
     if ($self->{base} && $self->{auto_cleanup}) {
         $self->cleanup_workdirs;
+    }
+
+    if ($self->{installed_dists}) {
+        my $dists = $self->{installed_dists} > 1 ? "distributions" : "distribution";
+        $self->diag("$self->{installed_dists} $dists installed\n", 1);
+    }
+
+    if ($self->{scandeps}) {
+        $self->dump_scandeps();
     }
 
     return !@fail;
@@ -178,20 +212,18 @@ sub setup_home {
         };
     }
 
-    open my $out, ">$self->{log}" or die "$self->{log}: $!";
-    print $out "cpanm (App::cpanminus) $VERSION on perl $] built for $Config{archname}\n";
-    print $out "Work directory is $self->{base}\n";
+    { open my $out, ">$self->{log}" or die "$self->{log}: $!" }
+
+    $self->chat("cpanm (App::cpanminus) $VERSION on perl $] built for $Config{archname}\n" .
+                "Work directory is $self->{base}\n");
 }
 
-sub fetch_meta {
+sub fetch_meta_sco {
     my($self, $dist) = @_;
+    return if $self->{mirror_only};
 
-    unless ($self->{mirror_only}) {
-        my $meta_yml = $self->get("http://cpansearch.perl.org/src/$dist->{cpanid}/$dist->{distvname}/META.yml");
-        return $self->parse_meta_string($meta_yml);
-    }
-
-    return undef;
+    my $meta_yml = $self->get("http://search.cpan.org/meta/$dist->{distvname}/META.yml");
+    return $self->parse_meta_string($meta_yml);
 }
 
 sub package_index_for {
@@ -221,7 +253,7 @@ sub generate_mirror_index {
                 print $fh $buffer;
             }
         } else {
-            unless (system("gunzip -c $gz_file > $file")) {
+            if (system("gunzip -c $gz_file > $file")) {
                 $self->diag_fail("Cannot uncompress -- please install gunzip or Compress::Zlib");
                 return;
             }
@@ -292,7 +324,7 @@ sub search_module {
         my $uri  = "http://cpanmetadb.appspot.com/v1.0/package/$module";
         my $yaml = $self->get($uri);
         my $meta = $self->parse_meta_string($yaml);
-        if ($meta->{distfile}) {
+        if ($meta && $meta->{distfile}) {
             return $self->cpan_module($module, $meta->{distfile}, $meta->{version});
         }
 
@@ -380,7 +412,7 @@ Usage: cpanm [options] Module [...]
 
 Options:
   -v,--verbose              Turns on chatty output
-  -q,--quiet                Turns off all output
+  -q,--quiet                Turns off the most output
   --interactive             Turns on interactive configure (required for Task:: modules)
   -f,--force                force install
   -n,--notest               Do not run unit tests
@@ -489,19 +521,46 @@ sub _core_only_inc {
 }
 
 sub _dump_inc {
-    my($self, $inc) = @_;
+    my($self, $inc, $std_inc) = @_;
 
-    my @inc = map { qq('$_') } (@$inc, '.'); # . for inc/Module/Install.pm
+    # TODO Win32 has forward slashes in @INC but backslashes in %Config
+
+    # $self->{base} for ModuleBuildPatch.pm, . for inc/Module/Install.pm
+    my @new_inc     = map { qq('$_') } (@$inc, $self->{base}, '.');
+    my @exclude_inc = map { qq('$_') } grep { $_ ne '.' && !ref } $self->_diff($inc, $std_inc);
 
     open my $out, ">$self->{base}/DumpedINC.pm" or die $!;
     local $" = ",";
-    print $out "BEGIN { \@INC = (@inc) }\n1;\n";
+    print $out <<EOF;
+package DumpedINC;
+my \%exclude = map { \$_ => 1 } (@exclude_inc);
+sub import {
+  if (\$_[1] eq "tests") {
+    \@INC = grep !\$exclude{\$_}, \@INC;
+  } else {
+    \@INC = (@new_inc);
+  }
+}
+1;
+EOF
 }
 
-sub _import_local_lib {
-    my($self, @args) = @_;
+sub _diff {
+    my($self, $old, $new) = @_;
+
+    my @diff;
+    my %old = map { $_ => 1 } @$old;
+    for my $n (@$new) {
+        push @diff, $n unless exists $old{$n};
+    }
+
+    @diff;
+}
+
+sub _setup_local_lib_env {
+    my($self, $base) = @_;
     local $SIG{__WARN__} = sub { }; # catch 'Attempting to write ...'
-    local::lib->import(@args);
+    local::lib->setup_env_hash_for($base);
 }
 
 sub setup_local_lib {
@@ -513,10 +572,16 @@ sub setup_local_lib {
         $base ||= "~/perl5";
         if ($self->{self_contained}) {
             my @inc = $self->_core_only_inc($base);
-            $self->_dump_inc(\@inc);
+            $self->_dump_inc(\@inc, \@INC);
             $self->{search_inc} = [ @inc ];
+        } else {
+            $self->{search_inc} = [
+                local::lib->install_base_arch_path($base),
+                local::lib->install_base_perl_path($base),
+                @INC,
+            ];
         }
-        $self->_import_local_lib($base);
+        $self->_setup_local_lib_env($base);
     }
 
     $self->bootstrap_local_lib_deps;
@@ -526,8 +591,7 @@ sub bootstrap_local_lib_deps {
     my $self = shift;
     push @{$self->{bootstrap_deps}},
         'ExtUtils::MakeMaker' => 6.31,
-        'ExtUtils::Install'   => 1.46,
-        'Module::Build'       => 0.28; # TODO: 0.36 or later for MYMETA.yml once we do --bootstrap command
+        'ExtUtils::Install'   => 1.46;
 }
 
 sub prompt_bool {
@@ -544,7 +608,7 @@ sub prompt {
     my $dispdef = defined $def ? "[$def] " : " ";
     $def = defined $def ? $def : "";
 
-    if ($self->{quiet} || !$self->{prompt} || (!$isa_tty && eof STDIN)) {
+    if (!$self->{prompt} || (!$isa_tty && eof STDIN)) {
         return $def;
     }
 
@@ -579,7 +643,7 @@ sub diag_ok {
 }
 
 sub diag_fail {
-    my($self, $msg) = @_;
+    my($self, $msg, $always) = @_;
     chomp $msg;
     if ($self->{in_progress}) {
         $self->_diag("FAIL\n");
@@ -587,7 +651,7 @@ sub diag_fail {
     }
 
     if ($msg) {
-        $self->_diag("! $msg\n");
+        $self->_diag("! $msg\n", $always);
         $self->log("-> FAIL $msg\n");
     }
 }
@@ -601,13 +665,13 @@ sub diag_progress {
 }
 
 sub _diag {
-    my $self = shift;
-    print STDERR @_ if $self->{verbose} or !$self->{quiet};
+    my($self, $msg, $always) = @_;
+    print STDERR $msg if $always or $self->{verbose} or !$self->{quiet};
 }
 
 sub diag {
-    my($self, $msg) = @_;
-    $self->_diag($msg);
+    my($self, $msg, $always) = @_;
+    $self->_diag($msg, $always);
     $self->log($msg);
 }
 
@@ -705,6 +769,12 @@ sub configure {
     my $use_default = !$self->{interactive};
     local $ENV{PERL_MM_USE_DEFAULT} = $use_default;
 
+    # skip man page generation
+    local $ENV{PERL_MM_OPT} = $ENV{PERL_MM_OPT};
+    unless ($self->{pod2man}) {
+        $ENV{PERL_MM_OPT} .= " INSTALLMAN1DIR=none INSTALLMAN3DIR=none";
+    }
+
     local $self->{verbose} = $self->{verbose} || $self->{interactive};
     $self->run_timeout($cmd, $self->{configure_timeout});
 }
@@ -724,7 +794,13 @@ sub build {
 sub test {
     my($self, $cmd, $distname) = @_;
     return 1 if $self->{notest};
-    local $ENV{AUTOMATED_TESTING} = 1;
+
+    # http://www.nntp.perl.org/group/perl.perl5.porters/2009/10/msg152656.html
+    local $ENV{AUTOMATED_TESTING} = 1
+        unless $self->env('NO_AUTOMATED_TESTING');
+
+   local $ENV{PERL5OPT} = "-I$self->{base} -MDumpedINC=tests"
+        if $self->{self_contained};
 
     return 1 if $self->run_timeout($cmd, $self->{test_timeout});
     if ($self->{force}) {
@@ -802,7 +878,7 @@ sub install_module {
 
     my $dist = $self->resolve_name($module);
     unless ($dist) {
-        $self->diag_fail("Couldn't find module or a distribution $module");
+        $self->diag_fail("Couldn't find module or a distribution $module", 1);
         return;
     }
 
@@ -811,21 +887,18 @@ sub install_module {
         return 1;
     }
 
-    if ($dist->{source} eq 'cpan') {
-        $dist->{meta} = $self->fetch_meta($dist);
-    }
-
     if ($self->{cmd} eq 'info') {
-        print $dist->{cpanid}, "/", $dist->{filename}, "\n";
+        print $self->format_dist($dist), "\n";
         return 1;
     }
 
     $self->check_libs;
+    $self->setup_module_build_patch unless $self->{pod2man};
 
     if ($dist->{module}) {
         my($ok, $local) = $self->check_module($dist->{module}, $dist->{module_version} || 0);
         if ($self->{skip_installed} && $ok) {
-            $self->diag("$dist->{module} is up to date. ($local)\n");
+            $self->diag("$dist->{module} is up to date. ($local)\n", 1);
             return 1;
         }
     }
@@ -840,7 +913,7 @@ sub install_module {
     $dist->{dir} ||= $self->fetch_module($dist);
 
     unless ($dist->{dir}) {
-        $self->diag_fail("Failed to fetch distribution $dist->{distvname}");
+        $self->diag_fail("Failed to fetch distribution $dist->{distvname}", 1);
         return;
     }
 
@@ -854,6 +927,13 @@ sub install_module {
     }
 
     return $self->build_stuff($module, $dist, $depth);
+}
+
+sub format_dist {
+    my($self, $dist) = @_;
+
+    # TODO support --dist-format?
+    return "$dist->{cpanid}/$dist->{filename}";
 }
 
 sub fetch_module {
@@ -910,9 +990,17 @@ sub fetch_module {
         }
 
         $self->diag_ok;
+        $dist->{local_path} = File::Spec->rel2abs($name);
 
         my $dir = $self->unpack($file);
         next unless $dir; # unpack failed
+
+        if (my $save = $self->{save_dists}) {
+            my $path = "$save/authors/id/$dist->{pathname}";
+            $self->chat("Copying $name to $path\n");
+            File::Path::mkpath([ File::Basename::dirname($path) ], 0, 0777);
+            File::Copy::copy($file, $path) or warn $!;
+        }
 
         return $dist, $dir;
     }
@@ -1007,6 +1095,23 @@ sub cpan_dist {
     };
 }
 
+sub setup_module_build_patch {
+    my $self = shift;
+
+    open my $out, ">$self->{base}/ModuleBuildSkipMan.pm" or die $!;
+    print $out <<EOF;
+package ModuleBuildSkipMan;
+CHECK {
+  if (%Module::Build::) {
+    no warnings 'redefine';
+    *Module::Build::Base::ACTION_manpages = sub {};
+    *Module::Build::Base::ACTION_docs     = sub {};
+  }
+}
+1;
+EOF
+}
+
 sub check_module {
     my($self, $mod, $want_ver) = @_;
 
@@ -1015,12 +1120,35 @@ sub check_module {
         or return 0, undef;
 
     my $version = $meta->version;
+
+    # When -L is in use, the version loaded from 'perl' library path
+    # might be newer than the version that is shipped with the current perl
+    if ($self->{self_contained} && $self->loaded_from_perl_lib($meta)) {
+        my $core_version = eval {
+            require Module::CoreList;
+            $Module::CoreList::version{$]+0}{$mod};
+        };
+
+        # HACK: Module::Build 0.3622 or later has non-core module
+        # dependencies such as Perl::OSType and CPAN::Meta, and causes
+        # issues when a newer version is loaded from 'perl' while deps
+        # are loaded from the 'site' library path. Just assume it's
+        # not in the core, and install to the new local library path.
+        if ($mod eq 'Module::Build') {
+            if ($version < 0.36 or $core_version != $version) {
+                return 0, undef;
+            }
+        }
+
+        $version = $core_version if $core_version;
+    }
+
     $self->{local_versions}{$mod} = $version;
 
     if ($self->is_deprecated($meta)){
         return 0, $version;
-    } elsif (!$want_ver or $version >= Module::Metadata::Version->new($want_ver)) {
-        return 1, $version;
+    } elsif (!$want_ver or $version >= version->new($want_ver)) {
+        return 1, ($version || 'undef');
     } else {
         return 0, $version;
     }
@@ -1035,6 +1163,11 @@ sub is_deprecated {
     };
 
     return unless $deprecated;
+    return $self->loaded_from_perl_lib($meta);
+}
+
+sub loaded_from_perl_lib {
+    my($self, $meta) = @_;
 
     require Config;
     for my $dir (qw(archlibexp privlibexp)) {
@@ -1096,7 +1229,7 @@ sub install_deps_bailout {
     if (@fail) {
         unless ($self->prompt_bool("Installing the following dependencies failed:\n==> " .
                                    join(", ", @fail) . "\nDo you want to continue building $target anyway?", "n")) {
-            $self->diag_fail("Bailing out the installation for $target. Retry with --prompt or --force.");
+            $self->diag_fail("Bailing out the installation for $target. Retry with --prompt or --force.", 1);
             return;
         }
     }
@@ -1113,6 +1246,13 @@ sub build_stuff {
         $dist->{meta} = $self->parse_meta('META.yml');
     }
 
+    if (!$dist->{meta} && $dist->{source} eq 'cpan') {
+        $self->chat("META.yml not found or unparsable. Fetching META.yml from search.cpan.org\n");
+        $dist->{meta} = $self->fetch_meta_sco($dist);
+    }
+
+    $dist->{meta} ||= {};
+
     push @config_deps, %{$dist->{meta}{configure_requires} || {}};
 
     my $target = $dist->{meta}{name} ? "$dist->{meta}{name}-$dist->{meta}{version}" : $dist->{dir};
@@ -1126,12 +1266,33 @@ sub build_stuff {
 
     $self->diag_ok($configure_state->{configured_ok} ? "OK" : "N/A");
 
-    my @deps = $self->find_prereqs($dist->{meta});
+    my @deps = $self->find_prereqs($dist);
 
     my $distname = $dist->{meta}{name} ? "$dist->{meta}{name}-$dist->{meta}{version}" : $stuff;
 
+    my $walkup;
+    if ($self->{scandeps}) {
+        $walkup = $self->scandeps_append_child($dist);
+    }
+
     $self->install_deps_bailout($distname, $dist->{dir}, $depth, @deps)
         or return;
+
+    if ($self->{scandeps}) {
+        unless ($configure_state->{configured_ok}) {
+            my $diag = <<DIAG;
+! Configuring $distname failed. See $self->{log} for details.
+! You might have to install the following modules first to get --scandeps working correctly.
+DIAG
+            if (@config_deps) {
+                my @tree = @{$self->{scandeps_tree}};
+                $diag .= "!\n" . join("", map "! * $_->[0]{module}\n", @tree[0..$#tree-1]) if @tree;
+            }
+            $self->diag("!\n$diag!\n", 1);
+        }
+        $walkup->();
+        return 1;
+    }
 
     if ($self->{installdeps} && $depth == 0) {
         $self->diag("<== Installed dependencies for $stuff. Finishing.\n");
@@ -1140,10 +1301,11 @@ sub build_stuff {
 
     my $installed;
     if ($configure_state->{use_module_build} && -e 'Build' && -f _) {
+        my @switches = $self->{pod2man} ? () : ("-I$self->{base}", "-MModuleBuildSkipMan");
         $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . $distname);
-        $self->build([ $self->{perl}, "./Build" ], $distname) &&
+        $self->build([ $self->{perl}, @switches, "./Build" ], $distname) &&
         $self->test([ $self->{perl}, "./Build", "test" ], $distname) &&
-        $self->install([ $self->{perl}, "./Build", "install" ], [ "--uninst", 1 ]) &&
+        $self->install([ $self->{perl}, @switches, "./Build", "install" ], [ "--uninst", 1 ]) &&
         $installed++;
     } elsif ($self->{make} && -e 'Makefile') {
         $self->diag_progress("Building " . ($self->{notest} ? "" : "and testing ") . $distname);
@@ -1158,7 +1320,7 @@ sub build_stuff {
         elsif ($self->{make})  { $why = "The distribution doesn't have a proper Makefile.PL/Build.PL" }
         else                   { $why = "Can't configure the distribution. You probably need to have 'make'." }
 
-        $self->diag_fail("$why See $self->{log} for details.");
+        $self->diag_fail("$why See $self->{log} for details.", 1);
         return;
     }
 
@@ -1172,11 +1334,12 @@ sub build_stuff {
                              : "installed $distname" ;
         my $msg = "Successfully $how";
         $self->diag_ok;
-        $self->diag("$msg\n");
+        $self->diag("$msg\n", 1);
+        $self->{installed_dists}++;
         return 1;
     } else {
         my $msg = "Building $distname failed";
-        $self->diag_fail("Installing $stuff failed. See $self->{log} for details.");
+        $self->diag_fail("Installing $stuff failed. See $self->{log} for details.", 1);
         return;
     }
 }
@@ -1184,9 +1347,25 @@ sub build_stuff {
 sub configure_this {
     my($self, $dist) = @_;
 
+    if ($self->{skip_configure}) {
+        my $eumm = -e 'Makefile';
+        my $mb   = -e 'Build' && -f _;
+        return {
+            configured => 1,
+            configured_ok => $eumm || $mb,
+            use_module_build => $mb,
+        };
+    }
+
     my @switches;
     @switches = ("-I$self->{base}", "-MDumpedINC") if $self->{self_contained};
     local $ENV{PERL5LIB} = ''                      if $self->{self_contained};
+
+    my @mb_switches = @switches;
+    unless ($self->{pod2man}) {
+        # it has to be push, so Module::Build is loaded from the adjusted path when -L is in use
+        push @mb_switches, ("-I$self->{base}", "-MModuleBuildSkipMan");
+    }
 
     my $state = {};
 
@@ -1209,7 +1388,7 @@ sub configure_this {
     my $try_mb = sub {
         if (-e 'Build.PL') {
             $self->chat("Running Build.PL\n");
-            if ($self->configure([ $self->{perl}, @switches, "Build.PL" ])) {
+            if ($self->configure([ $self->{perl}, @mb_switches, "Build.PL" ])) {
                 $state->{configured_ok} = -e 'Build' && -f _;
             }
             $state->{use_module_build}++;
@@ -1251,14 +1430,18 @@ sub safe_eval {
 }
 
 sub find_prereqs {
-    my($self, $meta) = @_;
+    my($self, $dist) = @_;
 
     my @deps;
+
+    my $meta = $dist->{meta};
     if (-e 'MYMETA.yml') {
         $self->chat("Checking dependencies from MYMETA.yml ...\n");
         my $mymeta = $self->parse_meta('MYMETA.yml');
-        @deps = $self->extract_requires($mymeta);
-        $meta->{$_} = $mymeta->{$_} for keys %$mymeta; # merge
+        if ($mymeta) {
+            @deps = $self->extract_requires($mymeta);
+            $meta->{$_} = $mymeta->{$_} for keys %$mymeta; # merge
+        }
     } elsif (-e '_build/prereqs') {
         $self->chat("Checking dependencies from _build/prereqs ...\n");
         my $mymeta = do { open my $in, "_build/prereqs"; $self->safe_eval(join "", <$in>) };
@@ -1284,10 +1467,48 @@ sub find_prereqs {
         }
     }
 
+    if ($dist->{module} =~ /^Bundle::/i) {
+        push @deps, $self->bundle_deps($dist);
+    }
+
     # No need to remove, but this gets in the way of signature testing :/
-    unlink 'MYMETA.yml';
+    unlink $_ for qw(MYMETA.json MYMETA.yml);
 
     return @deps;
+}
+
+sub bundle_deps {
+    my($self, $dist) = @_;
+
+    my @files;
+    File::Find::find({
+        wanted => sub { push @files, File::Spec->rel2abs($_) if /\.pm/i },
+        no_chdir => 1,
+    }, '.');
+
+    my @deps;
+
+    for my $file (@files) {
+        open my $pod, "<", $file or next;
+        my $in_contents;
+        while (<$pod>) {
+            if (/^=head\d\s+CONTENTS/) {
+                $in_contents = 1;
+            } elsif (/^=/) {
+                $in_contents = 0;
+            } elsif ($in_contents) {
+                /^(\S+)\s*(\S+)?/
+                    and push @deps, $1, $self->maybe_version($2);
+            }
+        }
+    }
+
+    return @deps;
+}
+
+sub maybe_version {
+    my($self, $string) = @_;
+    return $string && $string =~ /^\.?\d/ ? $string : undef;
 }
 
 sub extract_requires {
@@ -1321,6 +1542,64 @@ sub cleanup_workdirs {
     }
 }
 
+sub scandeps_append_child {
+    my($self, $dist) = @_;
+
+    my $new_node = [ $dist, [] ];
+
+    my $curr_node = $self->{scandeps_current} || [ undef, $self->{scandeps_tree} ];
+    push @{$curr_node->[1]}, $new_node;
+
+    $self->{scandeps_current} = $new_node;
+
+    return sub { $self->{scandeps_current} = $curr_node };
+}
+
+sub dump_scandeps {
+    my $self = shift;
+
+    if ($self->{format} eq 'tree') {
+        $self->walk_down(sub {
+            my($dist, $depth) = @_;
+            if ($depth == 0) {
+                print "$dist->{distvname}\n";
+            } else {
+                print " " x ($depth - 1);
+                print "\\_ $dist->{distvname}\n";
+            }
+        }, 1);
+    } elsif ($self->{format} =~ /^dists?$/) {
+        $self->walk_down(sub {
+            my($dist, $depth) = @_;
+            print $self->format_dist($dist), "\n";
+        }, 0);
+    } elsif ($self->{format} eq 'json') {
+        require JSON;
+        print JSON::encode_json($self->{scandeps_tree});
+    } elsif ($self->{format} eq 'yaml') {
+        require YAML;
+        print YAML::Dump($self->{scandeps_tree});
+    } else {
+        $self->diag("Unknown format: $self->{format}\n");
+    }
+}
+
+sub walk_down {
+    my($self, $cb, $pre) = @_;
+    $self->_do_walk_down($self->{scandeps_tree}, $cb, 0, $pre);
+}
+
+sub _do_walk_down {
+    my($self, $children, $cb, $depth, $pre) = @_;
+
+    # DFS - $pre determines when we call the callback
+    for my $node (@$children) {
+        $cb->($node->[0], $depth) if $pre;
+        $self->_do_walk_down($node->[1], $cb, $depth + 1, $pre);
+        $cb->($node->[0], $depth) unless $pre;
+    }
+}
+
 sub DESTROY {
     my $self = shift;
     $self->{at_exit}->($self) if $self->{at_exit};
@@ -1330,7 +1609,7 @@ sub DESTROY {
 
 sub shell_quote {
     my($self, $stuff) = @_;
-    $quote . $stuff . $quote;
+    $stuff =~ /^${quote}.+${quote}$/ ? $stuff : ($quote . $stuff . $quote);
 }
 
 sub which {
@@ -1350,7 +1629,6 @@ sub which {
 
 sub get      { $_[0]->{_backends}{get}->(@_) };
 sub mirror   { $_[0]->{_backends}{mirror}->(@_) };
-sub redirect { $_[0]->{_backends}{redirect}->(@_) };
 sub untar    { $_[0]->{_backends}{untar}->(@_) };
 sub unzip    { $_[0]->{_backends}{unzip}->(@_) };
 
@@ -1397,121 +1675,52 @@ sub init_tools {
             my $res = $ua->()->mirror(@_);
             $res->code;
         };
-        $self->{_backends}{redirect} = sub {
-            my $self = shift;
-            my $res  = $ua->(max_redirect => 1)->simple_request(HTTP::Request->new(GET => $_[0]));
-            return $res->header('Location') if $res->is_redirect;
-            return;
-        };
     } elsif ($self->{try_wget} and my $wget = $self->which('wget')) {
         $self->chat("You have $wget\n");
         $self->{_backends}{get} = sub {
             my($self, $uri) = @_;
             return $self->file_get($uri) if $uri =~ s!^file:/+!/!;
-            my $q = $self->{verbose} ? '' : '-q';
-            open my $fh, "$wget $uri $q -O - |" or die "wget $uri: $!";
+            $self->safeexec( my $fh, $wget, $uri, ( $self->{verbose} ? () : '-q' ), '-O', '-' ) or die "wget $uri: $!";
             local $/;
             <$fh>;
         };
         $self->{_backends}{mirror} = sub {
             my($self, $uri, $path) = @_;
             return $self->file_mirror($uri, $path) if $uri =~ s!^file:/+!/!;
-            my $q = $self->{verbose} ? '' : '-q';
-            system "$wget --retry-connrefused $uri $q -O $path";
-        };
-        $self->{_backends}{redirect} = sub {
-            my($self, $uri) = @_;
-            my $out = `$wget --max-redirect=0 $uri 2>&1`;
-            if ($out =~ /^Location: (\S+)/m) {
-                return $1;
-            }
-            return;
+            $self->safeexec( my $fh, $wget, '--retry-connrefused', $uri, ( $self->{verbose} ? () : '-q' ), '-O', $path ) or die "wget $uri: $!";
+            local $/;
+            <$fh>;
         };
     } elsif ($self->{try_curl} and my $curl = $self->which('curl')) {
         $self->chat("You have $curl\n");
         $self->{_backends}{get} = sub {
             my($self, $uri) = @_;
             return $self->file_get($uri) if $uri =~ s!^file:/+!/!;
-            my $q = $self->{verbose} ? '' : '-s';
-            open my $fh, "$curl -L $q $uri |" or die "curl $uri: $!";
+            $self->safeexec( my $fh, $curl, '-L', ( $self->{verbose} ? () : '-s' ), $uri ) or die "curl $uri: $!";
             local $/;
             <$fh>;
         };
         $self->{_backends}{mirror} = sub {
             my($self, $uri, $path) = @_;
             return $self->file_mirror($uri, $path) if $uri =~ s!^file:/+!/!;
-            my $q = $self->{verbose} ? '' : '-s';
-            system "$curl -L $uri $q -# -o $path";
-        };
-        $self->{_backends}{redirect} = sub {
-            my($self, $uri) = @_;
-            my $out = `$curl -I -s $uri 2>&1`;
-            if ($out =~ /^Location: (\S+)/m) {
-                return $1;
-            }
-            return;
+            $self->safeexec( my $fh, $curl, '-L', $uri, ( $self->{verbose} ? () : '-s' ), '-#', '-o', $path ) or die "curl $uri: $!";
+            local $/;
+            <$fh>;
         };
     } else {
-        require HTTP::Lite;
-        $self->chat("Falling back to HTTP::Lite $HTTP::Lite::VERSION\n");
-        my $http_cb = sub {
-            my($uri, $redir, $cb_gen) = @_;
-
-            my $http = HTTP::Lite->new;
-
-            my($data_cb, $done_cb) = $cb_gen ? $cb_gen->() : ();
-            my $req = $http->request($uri, $data_cb);
-            $done_cb->($req) if $done_cb;
-
-            my $redir_count;
-            while ($req == 302 or $req == 301)  {
-                last if $redir_count++ > 5;
-                my $loc;
-                for ($http->headers_array) {
-                    /Location: (\S+)/ and $loc = $1, last;
-                }
-                $loc or last;
-                if ($loc =~ m!^/!) {
-                    $uri =~ s!^(\w+?://[^/]+)/.*$!$1!;
-                    $uri .= $loc;
-                } else {
-                    $uri = $loc;
-                }
-
-                return $uri if $redir;
-
-                my($data_cb, $done_cb) = $cb_gen ? $cb_gen->() : ();
-                $req = $http->request($uri, $data_cb);
-                $done_cb->($req) if $done_cb;
-            }
-
-            return if $redir;
-            return ($http, $req);
-        };
+        require HTTP::Tiny;
+        $self->chat("Falling back to HTTP::Tiny $HTTP::Tiny::VERSION\n");
 
         $self->{_backends}{get} = sub {
-            my($self, $uri) = @_;
-            return $self->file_get($uri) if $uri =~ s!^file:/+!/!;
-            my($http, $req) = $http_cb->($uri);
-            return $http->body;
+            my $self = shift;
+            my $res = HTTP::Tiny->new->get($_[0]);
+            return unless $res->{success};
+            return $res->{content};
         };
-
         $self->{_backends}{mirror} = sub {
-            my($self, $uri, $path) = @_;
-            return $self->file_mirror($uri, $path) if $uri =~ s!^file:/+!/!;
-
-            my($http, $req) = $http_cb->($uri, undef, sub {
-                open my $out, ">$path" or die "$path: $!";
-                binmode $out;
-                sub { print $out ${$_[1]} }, sub { close $out };
-            });
-
-            return $req;
-        };
-
-        $self->{_backends}{redirect} = sub {
-            my($self, $uri) = @_;
-            return $http_cb->($uri, 1);
+            my $self = shift;
+            my $res = HTTP::Tiny->new->mirror(@_);
+            return $res->{status};
         };
     }
 
@@ -1532,6 +1741,7 @@ sub init_tools {
                 or return undef;
 
             chomp $root;
+            $root =~ s!^\./!!;
             $root =~ s{^(.+?)/.*$}{$1};
 
             system "$tar $xf$ar $tarfile";
@@ -1621,14 +1831,35 @@ sub init_tools {
     }
 }
 
+sub safeexec {
+    my $self = shift;
+    my $rdr = $_[0] ||= Symbol::gensym();
+
+    if (WIN32) {
+        my $cmd = join q{ }, map { $self->shell_quote($_) } @_[ 1 .. $#_ ];
+        return open( $rdr, "$cmd |" );
+    }
+
+    if ( my $pid = open( $rdr, '-|' ) ) {
+        return $pid;
+    }
+    elsif ( defined $pid ) {
+        exec( @_[ 1 .. $#_ ] );
+        exit 1;
+    }
+    else {
+        return;
+    }
+}
+
 sub parse_meta {
     my($self, $file) = @_;
-    return eval { (Parse::CPAN::Meta::LoadFile($file))[0] } || {};
+    return eval { (Parse::CPAN::Meta::LoadFile($file))[0] } || undef;
 }
 
 sub parse_meta_string {
     my($self, $yaml) = @_;
-    return eval { (Parse::CPAN::Meta::Load($yaml))[0] } || {};
+    return eval { (Parse::CPAN::Meta::Load($yaml))[0] } || undef;
 }
 
 1;

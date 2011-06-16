@@ -2,8 +2,8 @@
 # vim:ts=8:sw=2:et:sta:sts=2
 package Module::Metadata;
 
-# stolen from Module::Build::Version and ::Base - this is perl licensed code,
-# copyright them.
+# Adapted from Perl-licensed code originally distributed with
+# Module-Build by Ken Williams
 
 # This module provides routines to gather information about
 # perl modules (assuming this may be expanded in the distant
@@ -11,12 +11,12 @@ package Module::Metadata;
 
 use strict;
 use vars qw($VERSION);
-$VERSION = '0.36_04';
+$VERSION = '1.000003';
 $VERSION = eval $VERSION;
 
 use File::Spec;
 use IO::File;
-use Module::Metadata::Version;
+use version 0.87;
 BEGIN {
   if ($INC{'Log/Contextual.pm'}) {
     Log::Contextual->import('log_info');
@@ -84,8 +84,8 @@ sub new_from_module {
   
   my $compare_versions = sub {
     my ($v1, $op, $v2) = @_;
-    $v1 = Module::Metadata::Version->new($v1)
-      unless UNIVERSAL::isa($v1,'Module::Metadata::Version');
+    $v1 = version->new($v1)
+      unless UNIVERSAL::isa($v1,'version');
   
     my $eval_str = "\$v1 $op \$v2";
     my $result   = eval $eval_str;
@@ -99,8 +99,7 @@ sub new_from_module {
     if ( $version =~ /[=<>!,]/ ) { # logic, not just version
       # take as is without modification
     }
-    elsif ( ref $version eq 'version' ||
-            ref $version eq 'Module::Metadata::Version' ) { # version objects
+    elsif ( ref $version eq 'version' ) { # version objects
       $version = $version->is_qv ? $version->normal : $version->stringify;
     }
     elsif ( $version =~ /^[^v][^.]*\.[^.]+\./ ) { # no leading v, multiple dots
@@ -515,7 +514,7 @@ sub _evaluate_version_line {
   $pn++; # everybody gets their own package
   my $eval = qq{BEGIN { q#  Hide from _packages_inside()
     #; package Module::Metadata::_version::p$pn;
-    use Module::Metadata::Version;
+    use version;
     no strict;
 
     local $sigil$var;
@@ -543,24 +542,72 @@ sub _evaluate_version_line {
   die "Could not get version from $self->{filename} by executing:\n$eval\n\nThe fatal error was: $@\n"
     if $@;
 
-  # Activestate apparently creates custom versions like '1.23_45_01', which
-  # cause M::B::Version to think it's an invalid alpha.  So check for that
-  # and strip them
-  my $num_dots = () = $result =~ m{\.}g;
-  my $num_unders = () = $result =~ m{_}g;
-  if ( substr($result,0,1) ne 'v' && $num_dots < 2 && $num_unders > 1 ) {
-    $result =~ s{_}{}g;
-  }
+  # Upgrade it into a version object
+  my $version = eval { _dwim_version($result) };
 
-  # Bless it into our own version class
-  eval { $result = Module::Metadata::Version->new($result) };
   die "Version '$result' from $self->{filename} does not appear to be valid:\n$eval\n\nThe fatal error was: $@\n"
-    if $@;
+    unless defined $version; # "0" is OK!
 
-  return $result;
+  return $version;
 }
 }
 
+# Try to DWIM when things fail the lax version test in obvious ways
+{
+  my @version_prep = (
+    # Best case, it just works
+    sub { return shift },
+
+    # If we still don't have a version, try stripping any
+    # trailing junk that is prohibited by lax rules
+    sub {
+      my $v = shift;
+      $v =~ s{([0-9])[a-z-].*$}{$1}i; # 1.23-alpha or 1.23b
+      return $v;
+    },
+
+    # Activestate apparently creates custom versions like '1.23_45_01', which
+    # cause version.pm to think it's an invalid alpha.  So check for that
+    # and strip them
+    sub {
+      my $v = shift;
+      my $num_dots = () = $v =~ m{(\.)}g;
+      my $num_unders = () = $v =~ m{(_)}g;
+      my $leading_v = substr($v,0,1) eq 'v';
+      if ( ! $leading_v && $num_dots < 2 && $num_unders > 1 ) {
+        $v =~ s{_}{}g;
+        $num_unders = () = $v =~ m{(_)}g;
+      }
+      return $v;
+    },
+
+    # Worst case, try numifying it like we would have before version objects
+    sub {
+      my $v = shift;
+      no warnings 'numeric';
+      return 0 + $v;
+    },
+
+  );
+
+  sub _dwim_version {
+    my ($result) = shift;
+
+    return $result if ref($result) eq 'version';
+
+    my ($version, $error);
+    for my $f (@version_prep) {
+      $result = $f->($result);
+      $version = eval { version->new($result) };
+      $error ||= $@ if $@; # capture first failure
+      last if defined $version;
+    }
+
+    die $error unless defined $version;
+
+    return $version;
+  }
+}
 
 ############################################################
 
@@ -596,104 +643,4 @@ sub pod {
 }
 
 1;
-
-__END__
-
-=for :stopwords ModuleInfo
-
-=head1 NAME
-
-ModuleInfo - Gather package and POD information from a perl module file
-
-
-=head1 DESCRIPTION
-
-=over 4
-
-=item new_from_file($filename, collect_pod => 1)
-
-Construct a C<ModuleInfo> object given the path to a file. Takes an optional
-argument C<collect_pod> which is a boolean that determines whether
-POD data is collected and stored for reference. POD data is not
-collected by default. POD headings are always collected.
-
-=item new_from_module($module, collect_pod => 1, inc => \@dirs)
-
-Construct a C<ModuleInfo> object given a module or package name. In addition
-to accepting the C<collect_pod> argument as described above, this
-method accepts a C<inc> argument which is a reference to an array of
-of directories to search for the module. If none are given, the
-default is @INC.
-
-=item name()
-
-Returns the name of the package represented by this module. If there
-are more than one packages, it makes a best guess based on the
-filename. If it's a script (i.e. not a *.pm) the package name is
-'main'.
-
-=item version($package)
-
-Returns the version as defined by the $VERSION variable for the
-package as returned by the C<name> method if no arguments are
-given. If given the name of a package it will attempt to return the
-version of that package if it is specified in the file.
-
-=item filename()
-
-Returns the absolute path to the file.
-
-=item packages_inside()
-
-Returns a list of packages.
-
-=item pod_inside()
-
-Returns a list of POD sections.
-
-=item contains_pod()
-
-Returns true if there is any POD in the file.
-
-=item pod($section)
-
-Returns the POD data in the given section.
-
-=item find_module_by_name($module, \@dirs)
-
-Returns the path to a module given the module or package name. A list
-of directories can be passed in as an optional parameter, otherwise
-@INC is searched.
-
-Can be called as either an object or a class method.
-
-=item find_module_dir_by_name($module, \@dirs)
-
-Returns the entry in C<@dirs> (or C<@INC> by default) that contains
-the module C<$module>. A list of directories can be passed in as an
-optional parameter, otherwise @INC is searched.
-
-Can be called as either an object or a class method.
-
-=back
-
-
-=head1 AUTHOR
-
-Ken Williams <kwilliams@cpan.org>, Randy W. Sims <RandyS@ThePierianSpring.org>
-
-
-=head1 COPYRIGHT
-
-Copyright (c) 2001-2006 Ken Williams.  All rights reserved.
-
-This library is free software; you can redistribute it and/or
-modify it under the same terms as Perl itself.
-
-
-=head1 SEE ALSO
-
-perl(1), L<Module::Metadata>(3)
-
-=cut
 

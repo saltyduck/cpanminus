@@ -40,6 +40,7 @@ cpanm - get, unpack build and install modules from CPAN
   cpanm --installdeps .                                     # install all the deps for the current directory
   cpanm -L extlib Plack                                     # install Plack and all non-core deps into extlib
   cpanm --mirror http://cpan.cpantesters.org/ DBI           # use the fast-syncing mirror
+  cpanm --scandeps Moose                                    # See what modules will be installed for Moose
 
 =head1 COMMANDS
 
@@ -72,7 +73,7 @@ controlled repository such as git.
 =item --look
 
 Download and unpack the distribution and then open the directory with
-your shell. Handy to poke around the source code or do the manual
+your shell. Handy to poke around the source code or do manual
 testing.
 
 =item -h, --help
@@ -200,6 +201,70 @@ requires custom configuration or Task:: distributions.
 Defaults to false, and you can say C<--no-interactive> to override
 when it's set in the default options in C<PERL_CPANM_OPT>.
 
+=item --scandeps
+
+Scans the depencencies of given modules and output the tree in a text
+format. (See C<--format> below for more options)
+
+Because this command doesn't actually install any distributions, it
+will be useful that by typing:
+
+  cpanm --scandeps Catalyst::Runtime
+
+you can make sure what modules will be installed.
+
+This command takes into account which modules you already have
+installed in your system. If you want to see what modules will be
+installed against a vanilla perl installation, you might want to
+combine it with C<-L> option.
+
+=item --format
+
+Determines what format to display the scanned dependency
+tree. Available options are C<tree>, C<json>, C<yaml> and C<dists>.
+
+=over 8
+
+=item tree
+
+Displays the tree in a plain text format. This is the default value.
+
+=item json, yaml
+
+Outputs the tree in a JSON or YAML format. L<JSON> and L<YAML> modules
+need to be installed respectively. The output tree is represented as a
+recursive tuple of:
+
+  [ distribution, dependencies ]
+
+and the container is an array containing the root elements. Note that
+there may be multiple root nodes, since you can give multiple modules
+to the C<--scandeps> command.
+
+=item dists
+
+C<dists> is a special output format, where it prints the distribution
+filename in the I<depth first order> after the dependency resolution,
+like:
+
+  GAAS/MIME-Base64-3.13.tar.gz
+  GAAS/URI-1.58.tar.gz
+  PETDANCE/HTML-Tagset-3.20.tar.gz
+  GAAS/HTML-Parser-3.68.tar.gz
+  GAAS/libwww-perl-5.837.tar.gz
+
+which means you can install these distributions in this order without
+extra dependencies. When combined with C<-L> option, it will be useful
+to replay installations on other machines.
+
+=back
+
+=item --save-dists
+
+Specifies the optional directory path to copy downloaded tarballs in
+the CPAN mirror compatible directory structure
+i.e. I<authors/id/A/AU/AUTHORS/Foo-Bar-version.tar.gz>
+
 =item --uninst-shadows
 
 Uninstalls the shadow files of the distribution that you're
@@ -213,8 +278,14 @@ specify custom installation path, you SHOULD disable this option so
 you won't accidentally uninstall dual-life modules from the core
 include path.
 
-Defaults to true, and you can disable that with
-C<--no-uninst-shadows>.
+Defaults to true if your perl version is smaller than 5.12, and you
+can disable that with C<--no-uninst-shadows>.
+
+B<NOTE>: Since version 1.3000 this flag is turned off by default for
+perl newer than 5.12, since with 5.12 @INC contains site_perl directory
+I<before> the perl core library path, and uninstalling shadows is not
+necessary anymore and does more harm by deleting files from the core
+library path.
 
 =item --auto-cleanup
 
@@ -224,6 +295,14 @@ cleaned up in one week.
 
 You can set the value to C<0> to make cpan never cleanup those
 directories.
+
+=item --man-pages
+
+Generates man pages for executables (man1) and libraries (man3).
+
+Defaults to false (no man pages generated) if
+C<-L|--local-lib-contained> option is supplied. Otherwise, defaults to
+true, and you can disable it with C<--no-man-pages>.
 
 =item --lwp
 
@@ -243,7 +322,7 @@ Uses cURL (if available) to download stuff. Defaults to true, and
 you can say C<--no-curl> to disable using cURL.
 
 Normally with C<--lwp>, C<--wget> and C<--curl> options set to true
-(which is the default) cpanm tries L<LWP>, Wget, cURL and L<HTTP::Lite>
+(which is the default) cpanm tries L<LWP>, Wget, cURL and L<HTTP::Tiny>
 (in that order) and uses the first one available.
 
 =back
