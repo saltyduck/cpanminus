@@ -1,5 +1,5 @@
 package App::cpanminus;
-our $VERSION = "1.4008";
+our $VERSION = "1.5018";
 
 =head1 NAME
 
@@ -115,7 +115,7 @@ writing code.
 =head2 Zero-conf? How does this module get/parse/update the CPAN index?
 
 It queries the CPAN Meta DB site running on Google AppEngine at
-L<http://cpanmetadb.appspot.com/>. The site is updated every hour to reflect
+L<http://cpanmetadb.plackperl.org/>. The site is updated every hour to reflect
 the latest changes from fast syncing mirrors. The script then also falls back
 to scrape the site L<http://search.cpan.org/>.
 
@@ -188,7 +188,7 @@ Building RPM packages from CPAN modules
 
 =item *
 
-Listing the outdated modules that needs upgrading. See L<cpan-outdated>
+Listing the outdated modules that needs upgrading. See L<App::cpanoutdated>
 
 =item *
 
@@ -226,6 +226,18 @@ The standalone executable contains the following modules embedded.
 
 =item L<version> Copyright 2004-2010 John Peacock
 
+=item L<JSON::PP> Copyright 2007−2011 by Makamaka Hannyaharamitu
+
+=item L<CPAN::Meta> Copyright (c) 2010 by David Golden and Ricardo Signes
+
+=item L<Try::Tiny> Copyright (c) 2009 Yuval Kogman
+
+=item L<parent> Copyright (c) 2007-10 Max Maischein
+
+=item L<Version::Requirements> copyright (c) 2010 by Ricardo Signes
+
+=item L<CPAN::Meta::YAML> copyright (c) 2010 by Adam Kennedy
+
 =back
 
 =head1 LICENSE
@@ -239,8 +251,8 @@ Same as Perl.
 Patches and code improvements were contributed by:
 
 Goro Fuji, Kazuhiro Osawa, Tokuhiro Matsuno, Kenichi Ishigaki, Ian
-Wells, Pedro Melo, Masayoshi Sekimura, Matt S Trout, squeeky, horus
-and Ingy dot Net.
+Wells, Pedro Melo, Masayoshi Sekimura, Matt S Trout (mst), squeeky,
+horus and Ingy dot Net.
 
 =head2 ACKNOWLEDGEMENTS
 

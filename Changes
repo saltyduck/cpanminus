@@ -1,5 +1,130 @@
 See http://github.com/miyagawa/cpanminus/ for the latest development.
 
+1.5018 Wed Sep 19 14:40:28 JST 2012
+   [Improvements]
+      - Check cpanm path upon --self-upgrade to give warnings for perlbrew users
+
+1.5017 Wed Jul 18 08:28:49 PDT 2012
+   [Improvements]
+      - Ignore tarballs whose first entry is "./" (doy) #184
+
+1.5016 Tue Jul 17 12:00:57 PDT 2012
+   [Improvements]
+      - Added Module/CPANfile.pm to the fatlib. This allows bootstrapping dependencies
+        with cpanm --installdeps on Heroku etc.
+
+1.5015 Sun Jun 24 15:34:57 PDT 2012
+   [Improvements]
+      - Improved Makefile.PL to include bugtracker info (Ben Bullock)
+      - Fixed some merge mess with devel
+
+1.5014 Tue Jun 12 18:27:02 PDT 2012
+   [Improvements]
+      - Make sure 'f' flag becomes the last for some tar versions (mst, aaronsw)
+      - Fixed warnings on perl 5.17+ (rjbs)
+      - Fix local::lib error message (berekuk)
+
+1.5013 Sat May 12 06:15:44 EEST 2012
+   [Bug Fixes]
+      - Fixed --cascade-search to seach for missing modules, which was broken by #150
+
+1.5012 Fri May 11 05:47:56 CEST 2012
+   [Improvements]
+      - Change the behavior of --mirror-index so that it won't fallback to CPAN mirrors #150 (thaljef)
+      - Support v-strings in versions specified install [https://github.com/miyagawa/carton/issues/48]
+
+1.5011 Thu Apr 12 18:57:06 JST 2012
+   [Improvements]
+      - Point default mirror to www.cpan.org #148
+
+1.5010 Sat Mar 31 12:59:52 CEST 2012
+   [New Feature]
+      - Implemented --test-only option #40
+
+1.5009 Fri Mar 30 18:44:12 CEST 2012
+   [Bug Fixes]
+      - Fixed a bug where URL containing ~ (childe) fails to install #134
+      - Fixed a bug where install.json contains bogus data when you specify dist paths
+
+1.5008 Sat Mar 17 18:19:57 PDT 2012
+   [Bug Fixes]
+      - Fied a bug where `cpanm Foo` doesn't properly activate local::lib during installs
+        when you don't have write permissions #143 (goodel, ash)
+      - Improved the warning message when you don't have write permisisons #145 (ash)
+
+1.5007 Tue Dec 20 10:15:48 PST 2011
+   [Bug Fixes]
+      - Fixed to change directory when installing from multiple local directories (motemen)
+
+   [Improvements]
+      - Stop setting AUTOMATED_TESTING (again!) and set PERL_MM_USE_DEFAULT in testing (#138)
+      - Offer opening the build.log with PAGER when --prompt is enabled (doy)
+      - Documentation added for --skip-installed option (AlexBio)
+
+1.5006 Tue Nov 29 11:47:15 PST 2011
+   [Improvements]
+      - Updated cpanmetadb URL to point to cpanmetadb.plackperl.org
+
+1.5005 Tue Nov 22 13:29:27 PST 2011
+   [Bug Fixes]
+      - Fixed a bug where copying meta JSON files fail on Win32 (#133, #135)
+
+1.5004 Tue Nov  8 14:28:20 PST 2011
+   [Bug Fixes]
+      - Include version of the main module instead of distribution version in install.json (pfig)
+
+1.5003 Wed Oct 19 16:29:29 JST 2011
+   [Bug Fixes]
+      - Use ExtUtils::Install to install meta files and let --sudo run it with sudo #124
+
+1.5002 Tue Oct 18 09:06:17 JST 2011
+   [Bug Fixes]
+      - Make sure to include non-core perl modules in -L that are installed in 'perl' by mistake
+      - Ensure all module names use :: instead of dashes because of EUMM NAME errors (Christian Walde)
+
+1.5001 Fri Oct 14 00:18:33 JST 2011
+   [New Features]
+      - Added EXPERIMENTAL --metacpan support (tokuhirom)
+
+   [Improvements]
+      - Do not scan Makefile if MYMETA.yml is found
+      - Support MYMETA.json with spec 2.0
+
+1.5000 Thu Oct 13 15:31:13 JST 2011
+   [New Features]
+      - Added EXPERIMENTAL --mirror-index, --skip-satisfied and --cascade-search options
+      - Installs MYMETA.json and install.json into $ARCH/.meta library path
+
+   [Bug Fixes]
+      - Use Cwd::chdir to update CWD environment variable
+      - Fix ExtUtils::ParseXS issue with -L
+      - Fix CoreList bootstrap issue with perl < 5.8.9 when using -L
+      - Dump more descriptive error message when configure failed with --installdeps #111
+
+   [Improvements]
+      - Upgraded many fatlib embedded modules
+      - Support --no-quiet
+      - Removed ugly @INC dumping hack for -L. This causes modules that has conditional
+        deps such as Any::Moose not to pull down necessary requirements. This is a known
+        issue and will be addressed later.
+      - Support special _ for -l and -L argument to respect local::lib defaults #115
+
+
+1.49_02 Wed Oct 12 18:53:35 JST 2011
+   [Improvements]
+      - Use Cwd::chdir to change PWD (yannk)
+
+   [Bug Fixes]
+      - Unbreak -L with newer ExtUtils::ParseXS installed
+
+   [Developers]
+      - Changed the path to save metadata information
+      - removed Dist::Metadata use, but instead use Module::Metadata to get provides
+      - removed the ugly DumpedINC hack for -L
+
+1.49_01 Sun Jun 26 10:56:51 PDT 2011
+      - A couple of experimental new features (documented in 1.5)
+
 1.4008 Wed Jun 15 17:58:28 PDT 2011
    [Improvements]
       - Added experimental --skip-configure

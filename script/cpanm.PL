@@ -31,16 +31,16 @@ cpanm - get, unpack build and install modules from CPAN
 
 =head1 SYNOPSIS
 
-  cpanm Test::More                                          # install Test::More
-  cpanm MIYAGAWA/Plack-0.99_05.tar.gz                       # full distribution path
-  cpanm http://example.org/LDS/CGI.pm-3.20.tar.gz           # install from URL
-  cpanm ~/dists/MyCompany-Enterprise-1.00.tar.gz            # install from a local file
-  cpanm --interactive Task::Kensho                          # Configure interactively
-  cpanm .                                                   # install from local directory
-  cpanm --installdeps .                                     # install all the deps for the current directory
-  cpanm -L extlib Plack                                     # install Plack and all non-core deps into extlib
-  cpanm --mirror http://cpan.cpantesters.org/ DBI           # use the fast-syncing mirror
-  cpanm --scandeps Moose                                    # See what modules will be installed for Moose
+  cpanm Test::More                                 # install Test::More
+  cpanm MIYAGAWA/Plack-0.99_05.tar.gz              # full distribution path
+  cpanm http://example.org/LDS/CGI.pm-3.20.tar.gz  # install from URL
+  cpanm ~/dists/MyCompany-Enterprise-1.00.tar.gz   # install from a local file
+  cpanm --interactive Task::Kensho                 # Configure interactively
+  cpanm .                                          # install from local directory
+  cpanm --installdeps .                            # install all the deps for the current directory
+  cpanm -L extlib Plack                            # install Plack and all non-core deps into extlib
+  cpanm --mirror http://cpan.cpantesters.org/ DBI  # use the fast-syncing mirror
+  cpanm --scandeps Moose                           # See what modules will be installed for Moose
 
 =head1 COMMANDS
 
@@ -104,6 +104,16 @@ architecture you've already tested to make sure it builds fine.
 
 Defaults to false, and you can say C<--no-notest> to override when it
 is set in the default options in C<PERL_CPANM_OPT>.
+
+=item --test-only
+
+Run the tests only, and do not install the specified module or
+distributions. Handy if you want to verify the new (or even old)
+releases pass its unit tests without installing the module.
+
+Note that if you specify this option with a module or distribution
+that has dependencies, these dependencies will be installed if you
+don't currently have them.
 
 =item -S, --sudo
 
@@ -169,6 +179,16 @@ shell aliases, like:
   alias minicpanm='cpanm --mirror ~/minicpan --mirror-only'
   alias darkpan='cpanm --mirror http://mycompany.example.com/DPAN --mirror-only'
 
+=item --mirror-index
+
+B<EXPERIMENTAL>: Specifies the file path to C<02packages.details.txt>
+for module search index.
+
+=item --metacpan
+
+B<EXPERIMENTAL>: Use L<http://api.metacpan.org/> API for module lookup instead of
+L<http://cpanmetadb.plackperl.org/>.
+    
 =item --prompt
 
 Prompts when a test fails so that you can skip, force install, retry
@@ -287,9 +307,41 @@ I<before> the perl core library path, and uninstalling shadows is not
 necessary anymore and does more harm by deleting files from the core
 library path.
 
+=item --cascade-search
+
+B<EXPERIMENTAL>: Specifies whether to cascade search when you specify
+multiple mirrors and a mirror doesn't have a module or has a lower
+version of the module than requested. Defaults to false.
+
+=item --skip-installed
+
+Specifies whether a module given in the command line is skipped if its latest
+version is already installed. Defaults to true.
+
+B<NOTE>: The C<PERL5LIB> environment variable have to be correctly set for this
+to work with modules installed using L<local::lib>.
+
+=item --skip-satisfied
+
+B<EXPERIMENTAL>: Specifies whether a module (and version) given in the
+command line is skipped if it's already installed.
+
+If you run:
+
+  cpanm --skip-satisfied CGI DBI~1.2
+
+cpanm won't install them if you already have CGI (for whatever
+versions) or have DBI with version higher than 1.2. It is similar to
+C<--skip-installed> but while C<--skip-installed> checks if the
+I<latest> version of CPAN is installed, C<--skip-satisfied> checks if
+a requested version (or not, which means any version) is installed.
+
+Defaults to false for bare module names, but if you specify versions
+with C<~>, it will always skip satisfied requirements.
+
 =item --auto-cleanup
 
-Specifies the number of days in whcih cpanm's work directories
+Specifies the number of days in which cpanm's work directories
 expire. Defaults to 7, which means old work directories will be
 cleaned up in one week.
 
